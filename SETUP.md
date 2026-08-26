@@ -3,75 +3,35 @@
 Two parts. First get the code onto GitHub and switch on Pages. Then install the app to
 your phone.
 
-## Where the code is right now
+## Where the code is
 
-This project was built in a temporary cloud container, which gets wiped once the session
-ends. So that nothing was lost, the whole folder was committed to a branch of the only
-repository that session could reach:
+This is the repository. `https://github.com/GabPuccini/phthalo-finance`
 
-* Repository: `GabPuccini/CristianoRonaldo_Stats`
-* Branch: `claude/phthalo-finance-tracker-q0epur`
-* Path on that branch: `phthalo-finance/`
-
-**It is not part of the Cristiano Ronaldo site.** Nothing in that project was touched;
-the commit only adds a new folder. It is parked there and nothing more. Do not deploy the
-Cristiano Ronaldo repository expecting to get this app.
-
-To pull the folder out and give it a repository of its own:
-
-```sh
-git clone -b claude/phthalo-finance-tracker-q0epur --single-branch \
-  https://github.com/GabPuccini/CristianoRonaldo_Stats.git parked
-cp -r parked/phthalo-finance ./phthalo-finance
-rm -rf parked
-
-cd phthalo-finance
-git init -b main
-git add -A
-git commit -m "Phthalo Finance"
-```
-
-You now have the project on its own, with no remote attached. Carry on with part one
-below. Once it has a repository of its own, the parking branch can go:
+While it was being built there was a copy parked on a branch of another repository,
+because the build session could not reach anywhere else. That copy is no longer needed
+and can be deleted whenever you like:
 
 ```sh
 git push https://github.com/GabPuccini/CristianoRonaldo_Stats.git \
   --delete claude/phthalo-finance-tracker-q0epur
 ```
 
-## Part one: the GitHub repository
+Nothing in the Cristiano Ronaldo project was ever changed. That branch only ever added a
+folder, and deleting it removes the folder with it.
 
-### Create the repository
+## Part one: switching on GitHub Pages
 
-Go to <https://github.com/new> and create a repository under the `GabPuccini` account:
+The repository exists and the code is already in it, on the `main` branch. The only step
+left is telling GitHub to serve it.
 
-* **Repository name:** `phthalo-finance`
-* **Visibility:** private is fine. GitHub Pages works on a private repository on a paid
-  plan; on the free plan the repository has to be public for Pages to serve it.
-* **Do not** tick "Add a README file", "Add .gitignore" or "Choose a license". The
-  folder already has everything, and an extra commit on the remote just gets in the way.
-
-### Push the code
-
-From inside the `phthalo-finance` folder:
+### Getting the code onto your own machine
 
 ```sh
+git clone https://github.com/GabPuccini/phthalo-finance.git
 cd phthalo-finance
-git remote add origin https://github.com/GabPuccini/phthalo-finance.git
-git branch -M main
-git push -u origin main
 ```
 
-If the folder is not a git repository yet, or you are starting from a copy:
-
-```sh
-cd phthalo-finance
-git init -b main
-git add -A
-git commit -m "Phthalo Finance"
-git remote add origin https://github.com/GabPuccini/phthalo-finance.git
-git push -u origin main
-```
+That is all. There is nothing to install and nothing to build.
 
 ### Switch on GitHub Pages
 
