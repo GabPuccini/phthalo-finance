@@ -1,3 +1,6 @@
 .DS_Store
 node_modules/
 *.log
+
+# Output from tools/browser-smoke.mjs: screenshots and downloaded exports.
+tools/screenshots/

@@ -729,6 +729,218 @@ await step('C', 'The in browser test page passes', async () => {
   await testPage.close();
 });
 
+
+/* ---------------- D. Storage failure modes and migration ---------------- */
+
+await step('D', 'The three storage failure modes, and an old saved file', async () => {
+  // (a) Corrupt JSON with no usable backup.
+  const corrupt = await context.newPage();
+  await corrupt.goto(BASE, { waitUntil: 'networkidle' });
+  await corrupt.evaluate(() => {
+    localStorage.setItem('phthalo.finance.v1', '{ this is not json');
+    localStorage.removeItem('phthalo.finance.v1.backup');
+  });
+  await corrupt.reload({ waitUntil: 'networkidle' });
+  await corrupt.waitForTimeout(500);
+  const corruptBanner = await corrupt.locator('.banner.is-error').first().innerText().catch(() => '');
+  record('corrupt saved data shows a banner rather than a blank screen',
+    /could not be read/i.test(corruptBanner), corruptBanner.replace(/\n/g, ' ').slice(0, 100));
+  record('and offers to download the damaged file',
+    await corrupt.locator('[data-action="export-damaged"]').count() > 0, '');
+  record('and the app is still usable',
+    await corrupt.locator('#view-home .card').count() >= 5, '');
+  record('nothing was silently deleted',
+    (await corrupt.evaluate(() => localStorage.getItem('phthalo.finance.v1'))) !== null,
+    'the damaged value is still in storage');
+  await corrupt.close();
+
+  // (b) Corrupt main copy, but the rolling backup survives.
+  const recovered = await context.newPage();
+  await recovered.goto(BASE, { waitUntil: 'networkidle' });
+  await recovered.evaluate(() => {
+    const good = JSON.stringify({
+      schemaVersion: 1, accounts: [{ id: 'a', name: 'Rescued', type: 'balance', category: 'Cash' }],
+      transactions: [{ id: 't', accountId: 'a', date: '2026-01-01', direction: 'in', amountPence: 4200 }]
+    });
+    localStorage.setItem('phthalo.finance.v1.backup', good);
+    localStorage.setItem('phthalo.finance.v1', 'half a written {');
+  });
+  await recovered.reload({ waitUntil: 'networkidle' });
+  await recovered.waitForTimeout(500);
+  const recoveredBanner = await recovered.locator('.banner.is-error').first().innerText().catch(() => '');
+  record('a damaged main copy falls back to the rolling backup',
+    /rolling backup/i.test(recoveredBanner), recoveredBanner.replace(/\n/g, ' ').slice(0, 100));
+  const rescued = await recovered.evaluate(() =>
+    window.phthalo.app.state.accounts.some((a) => a.name === 'Rescued'));
+  record('and the backed up data really is loaded', rescued === true, '');
+  await recovered.close();
+
+  // (c) Storage switched off completely, which is what private browsing does.
+  const disabled = await browser.newContext({ viewport: { width: 375, height: 812 } });
+  await disabled.addInitScript(() => {
+    const blow = () => { const e = new Error('denied'); e.name = 'SecurityError'; throw e; };
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      get() { return { getItem: blow, setItem: blow, removeItem: blow, clear: blow, key: blow, length: 0 }; }
+    });
+  });
+  const noStore = await disabled.newPage();
+  const noStoreErrors = [];
+  noStore.on('pageerror', (e) => noStoreErrors.push(e.message));
+  await noStore.goto(BASE, { waitUntil: 'networkidle' });
+  await noStore.waitForTimeout(500);
+  const disabledBanner = await noStore.locator('.banner.is-error').first().innerText().catch(() => '');
+  record('storage being switched off shows a clear warning',
+    /will not let the app save|blocking storage/i.test(disabledBanner),
+    disabledBanner.replace(/\n/g, ' ').slice(0, 110));
+  record('and the app still runs rather than crashing',
+    await noStore.locator('#view-home .card').count() >= 5, '');
+  record('and it never throws with storage denied', noStoreErrors.length === 0,
+    noStoreErrors.join('; '));
+  await disabled.close();
+
+  // (d) Quota exceeded on write.
+  const full = await browser.newContext({ viewport: { width: 375, height: 812 } });
+  await full.addInitScript(() => {
+    const real = window.localStorage.setItem.bind(window.localStorage);
+    let armed = false;
+    window.__armQuota = () => { armed = true; };
+    window.localStorage.setItem = function setItem(key, value) {
+      if (armed && key.startsWith('phthalo.finance.v1')) {
+        const e = new Error('quota'); e.name = 'QuotaExceededError'; e.code = 22;
+        throw e;
+      }
+      return real(key, value);
+    };
+  });
+  const fullPage = await full.newPage();
+  await fullPage.goto(BASE, { waitUntil: 'networkidle' });
+  await fullPage.waitForTimeout(400);
+  await fullPage.evaluate(() => window.__armQuota());
+  // Make any change at all, which triggers an autosave.
+  await fullPage.click('.tabbar button[data-view="accounts"]');
+  await fullPage.click('[data-action="open-account"][data-arg="acc_savings"]');
+  await fullPage.click('[data-action="new-tx"][data-dir="in"]');
+  await fullPage.waitForSelector('#tx-amount');
+  await fullPage.fill('#tx-amount', '25');
+  await fullPage.click('form[data-form="transaction"] button[type="submit"]');
+  await fullPage.waitForTimeout(500);
+  const quotaBanner = await fullPage.locator('.banner.is-error').first().innerText().catch(() => '');
+  record('a full storage quota is reported rather than swallowed',
+    /not saved|run out of storage/i.test(quotaBanner), quotaBanner.replace(/\n/g, ' ').slice(0, 110));
+  record('and the banner offers a backup download',
+    await fullPage.locator('.banner [data-action="export-json"]').count() > 0, '');
+  record('and the change is still visible on screen',
+    /£/.test(await fullPage.locator('#view-accounts .hero-value').first().innerText()), '');
+  await full.close();
+
+  // (e) An older saved file is migrated rather than discarded.
+  const old = await context.newPage();
+  await old.goto(BASE, { waitUntil: 'networkidle' });
+  await old.evaluate(() => {
+    // Version 0: no schemaVersion, money as floating point pounds.
+    localStorage.setItem('phthalo.finance.v1', JSON.stringify({
+      accounts: [
+        { id: 'sav', name: 'Old savings', type: 'balance', category: 'Cash',
+          goalTarget: 10000, goalDate: '2027-01-01' },
+        { id: 'btc', name: 'Old bitcoin', units: 0.5, unit: 'BTC', unitPrice: 42000.5, category: 'Crypto' }
+      ],
+      transactions: [
+        { id: 't1', accountId: 'sav', date: '2026-01-01', amount: 1234.56 },
+        { id: 't2', accountId: 'sav', date: '2026-02-01', amount: -34.56 }
+      ]
+    }));
+    localStorage.removeItem('phthalo.finance.v1.backup');
+  });
+  await old.reload({ waitUntil: 'networkidle' });
+  await old.waitForTimeout(500);
+  const migratedBanner = await old.locator('.banner').first().innerText().catch(() => '');
+  record('an old saved file is upgraded, with a note saying so',
+    /upgraded/i.test(migratedBanner), migratedBanner.replace(/\n/g, ' ').slice(0, 110));
+  const migrated = await old.evaluate(() => {
+    const s = window.phthalo.app.state;
+    const sav = s.accounts.find((a) => a.id === 'sav');
+    return {
+      schema: s.schemaVersion,
+      accounts: s.accounts.length,
+      transactions: s.transactions.length,
+      firstAmount: s.transactions.find((t) => t.id === 't1').amountPence,
+      secondDirection: s.transactions.find((t) => t.id === 't2').direction,
+      goalPence: sav.goal ? sav.goal.targetPence : null,
+      btcType: s.accounts.find((a) => a.id === 'btc').type
+    };
+  });
+  record('pounds became integer pence', migrated.firstAmount === 123456, `${migrated.firstAmount}`);
+  record('a negative amount became a withdrawal', migrated.secondDirection === 'out', '');
+  record('the goal came across', migrated.goalPence === 1000000, `${migrated.goalPence}`);
+  record('the quantity account kept its type', migrated.btcType === 'quantity', migrated.btcType);
+  record('nothing was dropped in the upgrade',
+    migrated.accounts === 2 && migrated.transactions === 2,
+    `${migrated.accounts} accounts, ${migrated.transactions} entries`);
+  await old.close();
+});
+
+
+/* ---------------- E. Single account, and interface prose ---------------- */
+
+await step('E', 'Every chart with exactly one account, and the interface wording', async () => {
+  const solo = await context.newPage();
+  await solo.goto(BASE, { waitUntil: 'networkidle' });
+  await solo.evaluate(() => {
+    localStorage.setItem('phthalo.finance.v1', JSON.stringify({
+      schemaVersion: 1,
+      accounts: [{ id: 'only', name: 'Savings account', type: 'balance', category: 'Cash',
+        order: 0, colourIndex: 5, archived: false, note: '',
+        goal: { targetPence: 500000, targetDate: '2027-06-01', startDate: '2026-01-01', startPence: 0 } }],
+      transactions: [
+        { id: 'x1', accountId: 'only', date: '2026-03-01', direction: 'in', amountPence: 120000,
+          unitsE8: 0, unitPricePence: null, note: '', createdAt: '2026-03-01T00:00:00.000Z' },
+        { id: 'x2', accountId: 'only', date: '2026-07-01', direction: 'in', amountPence: 80000,
+          unitsE8: 0, unitPricePence: null, note: '', createdAt: '2026-07-01T00:00:00.000Z' }
+      ],
+      visuals: Object.keys({ netWorth: 1, position: 1, allocation: 1, goals: 1, contributions: 1,
+        monthlyNet: 1, holdings: 1, categoryTotals: 1 }).map((id, i) => ({ id, enabled: true, order: i }))
+    }));
+  });
+  await solo.reload({ waitUntil: 'networkidle' });
+  await solo.waitForTimeout(600);
+
+  const cards = await solo.locator('#view-home [data-visual-id]').count();
+  record('all eight visuals render with a single account', cards === 8, `${cards} cards`);
+  const broken = await solo.locator('#view-home .chart-error').count();
+  record('none of them errored', broken === 0, `${broken} errors`);
+  const blank = await solo.locator('#view-home .card-body:empty').count();
+  record('none of them is blank', blank === 0, `${blank} blank`);
+  const hero = await solo.locator('#view-home .hero-value').first().innerText();
+  record('net worth is right with one account', hero === '£2,000.00', hero);
+  const titles = await solo.locator('#view-home .card-title').allInnerTexts();
+  record('every card still has a plain English title',
+    titles.length === 8 && titles.every((t) => t.trim().length > 3), titles.join(' | '));
+  const overflow = await solo.evaluate(() =>
+    document.documentElement.scrollWidth <= window.innerWidth + 1);
+  record('and nothing overflows sideways', overflow, '');
+  await solo.screenshot({ path: path.join(SHOTS, 'E-single-account.png'), fullPage: true });
+
+  // Interface prose must not contain dashes or hyphenated words.
+  const prose = await solo.evaluate(() => {
+    const seen = new Set();
+    document.querySelectorAll('#view-home, .app-header, .tabbar, .banner').forEach((root) => {
+      root.querySelectorAll('*').forEach((el) => {
+        for (const node of el.childNodes) {
+          if (node.nodeType === 3 && node.textContent.trim()) seen.add(node.textContent.trim());
+        }
+      });
+    });
+    return Array.from(seen);
+  });
+  const dashed = prose.filter((t) => /[\u2013\u2014]/.test(t));
+  record('no em or en dashes in the interface', dashed.length === 0, dashed.join(' | '));
+  const hyphenated = prose.filter((t) => /[A-Za-z]{2,}-[A-Za-z]{2,}/.test(t));
+  record('no hyphenated words in the interface prose', hyphenated.length === 0,
+    hyphenated.join(' | '));
+  await solo.close();
+});
+
 /* ---------------- 13. Console ---------------- */
 
 await step(13, 'The browser console is clean throughout', async () => {
