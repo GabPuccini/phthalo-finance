@@ -3,6 +3,37 @@
 Two parts. First get the code onto GitHub and switch on Pages. Then install the app to
 your phone.
 
+## Where the code is right now
+
+This project was built in a temporary cloud container, which gets wiped once the session
+ends. So that nothing was lost, the whole thing, with its commit history, was pushed to a
+branch of the only repository that session could reach:
+
+* Repository: `GabPuccini/CristianoRonaldo_Stats`
+* Branch: `claude/phthalo-finance-tracker-q0epur`
+
+**That branch is not part of the Cristiano Ronaldo site.** It shares no history with
+`master`, nothing in that project was touched, and the branch holds only Phthalo Finance
+at its root. Do not merge it into `master`. It is a parking space, nothing more.
+
+To get the project onto your own machine as a standalone repository:
+
+```sh
+git clone -b claude/phthalo-finance-tracker-q0epur --single-branch \
+  https://github.com/GabPuccini/CristianoRonaldo_Stats.git phthalo-finance
+cd phthalo-finance
+git remote remove origin
+```
+
+You now have the folder, the files and the commit history, with no remote attached. Carry
+on with part one below to give it a repository of its own. Once that is done the parking
+branch can be deleted:
+
+```sh
+git push https://github.com/GabPuccini/CristianoRonaldo_Stats.git \
+  --delete claude/phthalo-finance-tracker-q0epur
+```
+
 ## Part one: the GitHub repository
 
 ### Create the repository
