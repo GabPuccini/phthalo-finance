@@ -1049,3 +1049,64 @@ test('the five categories that touch in the stacked bar are measurably separated
   assert.ok(report.pairs.every((p) => p.contrast > 1.2), 'adjacent segments stay distinguishable in greyscale');
   assert.equal(new Set(colours).size, colours.length, 'no two categories share a colour');
 });
+
+/* ------------------------------------------------------------------ */
+/* Demo data                                                           */
+/* ------------------------------------------------------------------ */
+
+test('the demo data is internally consistent', async () => {
+  const seed = await import('../src/seed.js');
+  const state = seed.demoState(TODAY);
+
+  assert.equal(state.accounts.length, 10);
+  assert.ok(state.transactions.length > 100, 'twelve months of activity');
+  assert.equal(L.validateImport(JSON.parse(JSON.stringify(state))).ok, true);
+
+  // No account may end up holding a negative amount of anything. This is
+  // the bug the generator originally had, where it sold Solana it had
+  // never bought.
+  for (const row of L.positionSeries(state, TODAY)) {
+    if (row.type === 'liability') {
+      assert.ok(row.valuePence <= 0, `${row.name} debt should sit below the axis`);
+    } else {
+      assert.ok(row.valuePence >= 0, `${row.name} should not be worth less than nothing`);
+      assert.ok(row.unitsE8 >= 0, `${row.name} should not hold negative units`);
+    }
+  }
+
+  // Every transaction falls inside the last thirteen months.
+  const earliest = L.earliestTransactionDate(state);
+  assert.ok(earliest >= L.addMonths(TODAY, -13));
+  assert.ok(state.transactions.every((t) => t.date <= TODAY), 'nothing is dated in the future');
+
+  // The series runs continuously to today with no gaps.
+  const series = L.buildDailySeries(state, { today: TODAY });
+  assert.equal(series[series.length - 1].date, TODAY);
+  for (let i = 1; i < series.length; i += 1) {
+    assert.equal(L.daysBetween(series[i - 1].date, series[i].date), 1, 'no gaps in the daily series');
+  }
+  assert.equal(series[series.length - 1].netWorthPence, L.netWorthAt(state, TODAY).netWorthPence);
+});
+
+test('the demo data is the same every time it is generated', async () => {
+  const seed = await import('../src/seed.js');
+  assert.deepEqual(seed.demoState(TODAY), seed.demoState(TODAY));
+});
+
+test('a brand new install has the ten default accounts and no transactions', async () => {
+  const seed = await import('../src/seed.js');
+  const state = seed.emptyStateWithDefaults(TODAY);
+  assert.equal(state.accounts.length, 10);
+  assert.equal(state.transactions.length, 0);
+  assert.equal(L.netWorthAt(state, TODAY).netWorthPence, 0);
+
+  // Every default account has a distinct colour and the debt keeps the red.
+  const colours = state.accounts.map((a) => L.colourForAccount(a));
+  assert.equal(new Set(colours).size, colours.length, 'no two default accounts share a colour');
+  assert.equal(colours[colours.length - 1], L.LIABILITY_COLOUR);
+
+  // Charts must have something sensible to draw with no data at all.
+  assert.equal(L.buildDailySeries(state, { today: TODAY }).length, 1);
+  assert.ok(L.allocationByCategory(state, TODAY).every((r) => r.fraction === 0));
+  assert.equal(L.contributionsByMonth(state, { today: TODAY }).length, 12);
+});
