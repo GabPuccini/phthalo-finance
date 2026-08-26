@@ -105,6 +105,20 @@ function emptyChart(width, height, message, hint) {
   </svg>`;
 }
 
+/**
+ * Axis ticks drop the pence, which is never useful on a scale, and follow
+ * the house rule of only abbreviating above ten thousand pounds.
+ */
+function axisMoney(pence) {
+  return Math.abs(pence) >= 1000000 ? formatMoneyCompact(pence) : formatMoney(pence, { showPence: false });
+}
+
+/** Left gutter wide enough for the widest tick label, so nothing clips. */
+function gutterFor(ticks, fontSize = 11.5) {
+  const widest = Math.max(...ticks.map((t) => textWidth(axisMoney(t), fontSize)));
+  return Math.ceil(Math.max(28, Math.min(96, widest + 10)));
+}
+
 function monthLabel(monthKeyValue) {
   const names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const parts = String(monthKeyValue).split('-');
@@ -167,12 +181,9 @@ export function netWorthVisual(ctx) {
   }
 
   const height = 210;
-  const padLeft = 46;
   const padRight = 10;
   const padTop = 12;
   const padBottom = 26;
-  const plotW = Math.max(40, width - padLeft - padRight);
-  const plotH = height - padTop - padBottom;
 
   const values = series.map((p) => p.netWorthPence);
   const rawMin = Math.min(...values);
@@ -181,6 +192,9 @@ export function netWorthVisual(ctx) {
   // the tick labels below always show the real numbers.
   const scale = niceScale(rawMin, rawMax, 3);
   const span = scale.max - scale.min || 1;
+  const padLeft = gutterFor(scale.ticks);
+  const plotW = Math.max(40, width - padLeft - padRight);
+  const plotH = height - padTop - padBottom;
 
   const points = sampleSeries(series, Math.max(2, Math.min(180, Math.floor(plotW / 2))));
   const x = (i) => padLeft + (points.length === 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
@@ -194,7 +208,7 @@ export function netWorthVisual(ctx) {
   const ticks = scale.ticks.filter((_, i, arr) => arr.length <= 4 || i % Math.ceil(arr.length / 4) === 0);
   const axis = ticks.map((value) => `
     <text x="${padLeft - 6}" y="${(y(value) + 4).toFixed(1)}" text-anchor="end"
-          class="axis-label">${esc(formatMoneyCompact(value))}</text>`).join('');
+          class="axis-label">${esc(axisMoney(value))}</text>`).join('');
 
   const firstLabel = dayLabel(points[0].date);
   const lastLabel = dayLabel(points[points.length - 1].date);
@@ -306,7 +320,7 @@ export function allocationVisual(ctx) {
     const segWidth = Math.max(2, row.fraction * plotW);
     const percent = `${Math.round(row.fraction * 100)}%`;
     const label = `${row.name}: ${percent} (${formatMoney(row.valuePence)})`;
-    const fits = segWidth > textWidth(percent, 12, true) + 12;
+    const fits = segWidth > textWidth(percent, 12, true) + 18;
     segments.push(`
       <rect x="${cursor.toFixed(1)}" y="4" width="${segWidth.toFixed(1)}" height="${barHeight - 8}"
             fill="${categoryVar(row.name)}" class="bar segment" ${tip(label)}/>
@@ -462,15 +476,15 @@ export function contributionsVisual(ctx) {
   }
 
   const height = 190;
-  const padLeft = 44;
   const padBottom = 30;
   const padTop = 10;
-  const plotW = Math.max(40, width - padLeft - 4);
-  const plotH = height - padTop - padBottom;
 
   // Column axes always start at zero.
   const maxValue = Math.max(1, ...rows.map((r) => Math.max(r.inPence, r.outPence)));
   const scale = niceScale(0, maxValue, 3);
+  const padLeft = gutterFor(scale.ticks);
+  const plotW = Math.max(40, width - padLeft - 4);
+  const plotH = height - padTop - padBottom;
   const y = (v) => padTop + plotH - ((v / (scale.max || 1)) * plotH);
 
   const slot = plotW / rows.length;
@@ -502,7 +516,7 @@ export function contributionsVisual(ctx) {
 
   const yLabels = scale.ticks.map((value) => `
     <text x="${padLeft - 6}" y="${(y(value) + 4).toFixed(1)}" text-anchor="end"
-          class="axis-label">${esc(formatMoneyCompact(value))}</text>`).join('');
+          class="axis-label">${esc(axisMoney(value))}</text>`).join('');
 
   const body = `${svgOpen(width, height, 'Money in against money out for each of the last twelve months')}
       ${yLabels}
@@ -535,14 +549,14 @@ export function monthlyNetVisual(ctx) {
   }
 
   const height = 180;
-  const padLeft = 44;
   const padTop = 10;
   const padBottom = 30;
-  const plotW = Math.max(40, width - padLeft - 4);
-  const plotH = height - padTop - padBottom;
 
   const values = rows.map((r) => r.netPence);
   const scale = niceScale(Math.min(0, ...values), Math.max(0, ...values), 3);
+  const padLeft = gutterFor(scale.ticks);
+  const plotW = Math.max(40, width - padLeft - 4);
+  const plotH = height - padTop - padBottom;
   const span = (scale.max - scale.min) || 1;
   const y = (v) => padTop + plotH - (((v - scale.min) / span) * plotH);
   const zeroY = y(0);
@@ -570,7 +584,7 @@ export function monthlyNetVisual(ctx) {
 
   const yLabels = scale.ticks.map((value) => `
     <text x="${padLeft - 6}" y="${(y(value) + 4).toFixed(1)}" text-anchor="end"
-          class="axis-label">${esc(formatMoneyCompact(value))}</text>`).join('');
+          class="axis-label">${esc(axisMoney(value))}</text>`).join('');
 
   return {
     title: monthlyNetTitle(rows),

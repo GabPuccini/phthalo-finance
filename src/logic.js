@@ -1238,32 +1238,78 @@ export function normaliseState(state, todayISO) {
     .sort((a, b) => a.order - b.order)
     .map((v, i) => ({ ...v, order: i }));
 
-  out.accounts = out.accounts.map((account, i) => ({
-    archived: false,
-    category: 'Cash',
-    order: i,
-    colourIndex: i,
-    unitsE8: 0,
-    goal: null,
-    note: '',
-    ...account,
-    order: Number.isFinite(account.order) ? account.order : i,
-    colourIndex: Number.isInteger(account.colourIndex) ? account.colourIndex : i,
-    archived: Boolean(account.archived)
-  }));
-
-  out.transactions = out.transactions.map((tx) => ({
-    unitsE8: 0,
-    unitPricePence: null,
-    note: '',
-    createdAt: tx.createdAt || `${tx.date}T00:00:00.000Z`,
-    ...tx,
-    amountPence: Math.round(Math.abs(tx.amountPence || 0)),
-    unitsE8: Math.round(Math.abs(tx.unitsE8 || 0)),
-    direction: tx.direction === 'out' ? 'out' : 'in'
-  }));
+  out.accounts = out.accounts.map((account, i) => canonicalAccount(account, i));
+  out.transactions = out.transactions.map((tx) => canonicalTransaction(tx));
 
   return out;
+}
+
+/**
+ * Fields are written in a fixed order so that exporting the same data
+ * twice produces byte identical files. Without this, an account created
+ * by the interface and the same account read back from a backup differ
+ * only in key order, which makes two backups impossible to compare.
+ * Anything unrecognised is carried through rather than dropped.
+ */
+const ACCOUNT_FIELD_ORDER = [
+  'id', 'name', 'type', 'category', 'order', 'colourIndex', 'archived', 'note', 'goal',
+  'unit', 'unitPricePence', 'priceUpdatedAt', 'priceSource', 'priceSymbol', 'priceKind',
+  'interestRatePct'
+];
+
+const TRANSACTION_FIELD_ORDER = [
+  'id', 'accountId', 'date', 'direction', 'amountPence', 'unitsE8', 'unitPricePence',
+  'note', 'createdAt'
+];
+
+function withExtras(built, source, known) {
+  for (const key of Object.keys(source)) {
+    if (!known.includes(key)) built[key] = source[key];
+  }
+  return built;
+}
+
+export function canonicalAccount(account, index = 0) {
+  const type = ACCOUNT_TYPES.includes(account.type) ? account.type : 'balance';
+  const built = {
+    id: account.id,
+    name: account.name,
+    type,
+    category: account.category || (type === 'liability' ? 'Debt' : 'Cash'),
+    order: Number.isFinite(account.order) ? account.order : index,
+    colourIndex: Number.isInteger(account.colourIndex) ? account.colourIndex : index,
+    archived: Boolean(account.archived),
+    note: account.note || '',
+    goal: account.goal || null
+  };
+  if (type === 'quantity') {
+    built.unit = account.unit || 'units';
+    built.unitPricePence = Math.round(account.unitPricePence || 0);
+    built.priceUpdatedAt = account.priceUpdatedAt || null;
+    built.priceSource = account.priceSource || 'manual';
+    if (account.priceSymbol) built.priceSymbol = account.priceSymbol;
+    if (account.priceKind) built.priceKind = account.priceKind;
+  }
+  if (type === 'liability' && account.interestRatePct !== undefined
+    && account.interestRatePct !== null) {
+    built.interestRatePct = account.interestRatePct;
+  }
+  return withExtras(built, account, ACCOUNT_FIELD_ORDER);
+}
+
+export function canonicalTransaction(tx) {
+  const built = {
+    id: tx.id,
+    accountId: tx.accountId,
+    date: tx.date,
+    direction: tx.direction === 'out' ? 'out' : 'in',
+    amountPence: Math.round(Math.abs(tx.amountPence || 0)),
+    unitsE8: Math.round(Math.abs(tx.unitsE8 || 0)),
+    unitPricePence: Number.isFinite(tx.unitPricePence) ? tx.unitPricePence : null,
+    note: tx.note || '',
+    createdAt: tx.createdAt || `${tx.date}T00:00:00.000Z`
+  };
+  return withExtras(built, tx, TRANSACTION_FIELD_ORDER);
 }
 
 /**

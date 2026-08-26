@@ -385,7 +385,7 @@ function renderAccounts() {
   const archived = app.state.accounts.filter((a) => a.archived);
   const totals = netWorthAt(app.state, today);
 
-  const rowFor = (account, index, list) => {
+  const rowFor = (account) => {
     const entry = balances.get(account.id) || { valuePence: 0, unitsE8: 0, pricePence: 0 };
     const isDebt = account.type === 'liability';
     const meta = [account.category];
@@ -394,7 +394,7 @@ function renderAccounts() {
     }
     if (account.goal) meta.push('has a goal');
     return `
-      <li style="display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center">
+      <li>
         <button type="button" class="row" data-action="open-account" data-arg="${esc(account.id)}">
           <span class="row-stripe" style="background:${isDebt ? 'var(--negative)' : seriesVar(account.colourIndex)}"></span>
           <span class="row-main">
@@ -405,22 +405,6 @@ function renderAccounts() {
             ${esc(formatMoney(isDebt ? -entry.valuePence : entry.valuePence))}
           </span>
         </button>
-        <span style="display:flex;flex-direction:column;gap:2px">
-          <button type="button" class="button is-icon is-quiet" data-action="move-account"
-                  data-arg="${esc(account.id)}" data-dir="up" ${index === 0 ? 'disabled' : ''}
-                  aria-label="Move ${esc(account.name)} up" style="height:22px;min-height:22px">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                 stroke-width="2.4" aria-hidden="true"><path d="M6 15l6-6 6 6" stroke-linecap="round"
-                 stroke-linejoin="round"/></svg>
-          </button>
-          <button type="button" class="button is-icon is-quiet" data-action="move-account"
-                  data-arg="${esc(account.id)}" data-dir="down" ${index === list.length - 1 ? 'disabled' : ''}
-                  aria-label="Move ${esc(account.name)} down" style="height:22px;min-height:22px">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor"
-                 stroke-width="2.4" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke-linecap="round"
-                 stroke-linejoin="round"/></svg>
-          </button>
-        </span>
       </li>`;
   };
 
@@ -436,7 +420,9 @@ function renderAccounts() {
         ${esc(formatMoney(totals.liabilitiesPence))} owed</p>
     </div>
     ${accounts.length
-    ? `<ul class="row-list">${accounts.map((a, i) => rowFor(a, i, accounts)).join('')}</ul>`
+    ? `<ul class="row-list">${accounts.map((a) => rowFor(a)).join('')}</ul>
+       <p class="section-hint" style="margin-top:10px">Open an account to reorder, archive,
+         rename or delete it.</p>`
     : '<p class="empty-note">No accounts yet. Add one to get started.</p>'}
     ${archived.length ? `
       <div class="section-head"><h3 class="section-title">Archived</h3></div>
@@ -638,6 +624,10 @@ function openAccount(id) {
   const txs = sortedTransactions(app.state).filter((t) => t.accountId === account.id).reverse();
 
   const progress = account.goal ? goalProgress(account, entry.valuePence, today) : null;
+  const ordered = activeAccounts(app.state);
+  const position = ordered.findIndex((a) => a.id === account.id);
+  const isFirst = position <= 0;
+  const isLast = position === -1 || position === ordered.length - 1;
 
   let payoff = '';
   if (isDebt && entry.valuePence > 0) {
@@ -732,6 +722,12 @@ function openAccount(id) {
       </button></li>`).join('')}</ul>`
     : '<p class="empty-note">No entries for this account yet.</p>'}
 
+    <div class="form-actions">
+      <button type="button" class="button" data-action="move-account" data-arg="${esc(account.id)}"
+              data-dir="up" ${isFirst ? 'disabled' : ''}>Move up</button>
+      <button type="button" class="button" data-action="move-account" data-arg="${esc(account.id)}"
+              data-dir="down" ${isLast ? 'disabled' : ''}>Move down</button>
+    </div>
     <div class="form-actions">
       <button type="button" class="button" data-action="edit-account" data-arg="${esc(account.id)}">Edit account</button>
       <button type="button" class="button" data-action="toggle-archive" data-arg="${esc(account.id)}">
@@ -1573,6 +1569,7 @@ const ACTIONS = {
 
   'move-account'(el) {
     const dir = el.dataset.dir === 'up' ? -1 : 1;
+    const insideSheet = Boolean(el.closest('#sheet'));
     commit((draft) => {
       const list = draft.accounts.filter((a) => !a.archived)
         .sort((a, b) => a.order - b.order);
@@ -1584,6 +1581,7 @@ const ACTIONS = {
       current.order = swap.order;
       swap.order = temp;
     });
+    if (insideSheet) openAccount(el.dataset.arg);
   },
 
   'toggle-archive'(el) {

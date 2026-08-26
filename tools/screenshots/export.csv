@@ -1,0 +1,133 @@
+Date,Account,Category,Type,Direction,Amount (GBP),Units,Unit price (GBP),Note
+2025-08-01,Current account,Cash,balance,In,1420.00,,,Opening balance
+2025-08-01,Savings account,Cash,balance,In,2100.00,,,Opening balance
+2025-08-01,Lifetime ISA,Property savings,balance,In,6400.00,,,Opening balance
+2025-08-01,Stocks and Shares ISA,Investments,balance,In,8950.00,,,Opening balance
+2025-08-01,Bitcoin,Crypto,quantity,In,1650.76,0.038,43441.16,Opening holding
+2025-08-01,Ethereum,Crypto,quantity,In,1433.33,0.6,2388.88,Opening holding
+2025-08-01,Gold,Precious metals,quantity,In,2689.77,1.5,1793.18,Opening holding
+2025-08-02,Debt,Debt,liability,In,4800.00,,,Opening balance
+2025-08-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2025-08-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2025-08-05,Savings account,Cash,balance,In,166.31,,,Monthly transfer
+2025-08-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2025-08-14,Ethereum,Crypto,quantity,In,98.20,0.04380799,2241.60,Monthly buy
+2025-08-16,Solana,Crypto,quantity,In,94.31,1.10939889,85.01,Monthly buy
+2025-08-25,Current account,Cash,balance,In,2700.52,,,Salary
+2025-08-27,Current account,Cash,balance,Out,-1874.39,,,Living costs
+2025-08-28,Stocks and Shares ISA,Investments,balance,Out,-12.19,,,Market movement
+2025-09-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2025-09-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2025-09-05,Savings account,Cash,balance,In,175.53,,,Monthly transfer
+2025-09-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2025-09-12,Bitcoin,Crypto,quantity,In,111.17,0.00264794,41983.52,Monthly buy
+2025-09-14,Ethereum,Crypto,quantity,In,91.40,0.04483623,2038.53,Monthly buy
+2025-09-16,Solana,Crypto,quantity,In,58.57,0.66830215,87.64,Monthly buy
+2025-09-18,Silver,Precious metals,quantity,In,255.84,12,21.32,Coin purchase
+2025-09-25,Current account,Cash,balance,In,2878.98,,,Salary
+2025-09-27,Current account,Cash,balance,Out,-1783.78,,,Living costs
+2025-09-28,Stocks and Shares ISA,Investments,balance,In,174.92,,,Market movement
+2025-10-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2025-10-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2025-10-05,Savings account,Cash,balance,In,161.70,,,Monthly transfer
+2025-10-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2025-10-12,Bitcoin,Crypto,quantity,In,215.76,0.00483412,44632.71,Monthly buy
+2025-10-14,Ethereum,Crypto,quantity,In,78.99,0.03166985,2494.17,Monthly buy
+2025-10-25,Current account,Cash,balance,In,2719.15,,,Salary
+2025-10-27,Current account,Cash,balance,Out,-1995.11,,,Living costs
+2025-10-28,Stocks and Shares ISA,Investments,balance,In,173.57,,,Market movement
+2025-11-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2025-11-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2025-11-05,Savings account,Cash,balance,In,158.82,,,Monthly transfer
+2025-11-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2025-11-12,Bitcoin,Crypto,quantity,In,247.41,0.00527571,46896.04,Monthly buy
+2025-11-18,Silver,Precious metals,quantity,In,258.83,13,19.91,Coin purchase
+2025-11-25,Current account,Cash,balance,In,2734.24,,,Salary
+2025-11-27,Current account,Cash,balance,Out,-1803.48,,,Living costs
+2025-11-28,Stocks and Shares ISA,Investments,balance,Out,-48.19,,,Market movement
+2025-12-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2025-12-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2025-12-05,Savings account,Cash,balance,In,199.56,,,Monthly transfer
+2025-12-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2025-12-12,Bitcoin,Crypto,quantity,In,226.72,0.00439971,51530.63,Monthly buy
+2025-12-14,Ethereum,Crypto,quantity,In,126.77,0.05822135,2177.38,Monthly buy
+2025-12-16,Solana,Crypto,quantity,In,71.12,0.5561029,127.89,Monthly buy
+2025-12-20,Gold,Precious metals,quantity,In,928.78,0.5,1857.55,Half ounce purchase
+2025-12-25,Current account,Cash,balance,In,2753.01,,,Salary
+2025-12-27,Current account,Cash,balance,Out,-1965.76,,,Living costs
+2025-12-28,Stocks and Shares ISA,Investments,balance,Out,-136.94,,,Market movement
+2026-01-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-01-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-01-05,Savings account,Cash,balance,In,175.29,,,Monthly transfer
+2026-01-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2026-01-12,Bitcoin,Crypto,quantity,In,245.95,0.00504942,48708.57,Monthly buy
+2026-01-18,Silver,Precious metals,quantity,In,185.76,9,20.64,Coin purchase
+2026-01-25,Current account,Cash,balance,In,2861.05,,,Salary
+2026-01-27,Current account,Cash,balance,Out,-1918.63,,,Living costs
+2026-01-28,Stocks and Shares ISA,Investments,balance,Out,-143.97,,,Market movement
+2026-02-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-02-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-02-05,Savings account,Cash,balance,In,152.10,,,Monthly transfer
+2026-02-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2026-02-12,Bitcoin,Crypto,quantity,In,151.83,0.00252832,60051.85,Monthly buy
+2026-02-14,Ethereum,Crypto,quantity,In,93.98,0.03615088,2599.66,Monthly buy
+2026-02-16,Solana,Crypto,quantity,In,76.17,0.70730801,107.69,Monthly buy
+2026-02-22,Savings account,Cash,balance,Out,-528.64,,,Unexpected bill
+2026-02-25,Current account,Cash,balance,In,2744.53,,,Salary
+2026-02-26,Current account,Cash,balance,In,2000.00,,,
+2026-02-27,Current account,Cash,balance,Out,-2033.30,,,Living costs
+2026-02-28,Stocks and Shares ISA,Investments,balance,Out,-67.91,,,Market movement
+2026-03-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-03-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-03-05,Savings account,Cash,balance,In,228.46,,,Monthly transfer
+2026-03-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2026-03-14,Ethereum,Crypto,quantity,In,100.17,0.0350317,2859.41,Monthly buy
+2026-03-21,Solana,Crypto,quantity,Out,-133.44,1.21644478,109.70,Took some profit
+2026-03-25,Current account,Cash,balance,In,2848.87,,,Salary
+2026-03-27,Current account,Cash,balance,Out,-1833.20,,,Living costs
+2026-03-28,Stocks and Shares ISA,Investments,balance,In,151.58,,,Market movement
+2026-04-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-04-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-04-05,Savings account,Cash,balance,In,176.84,,,Monthly transfer
+2026-04-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2026-04-14,Ethereum,Crypto,quantity,In,83.68,0.03357945,2492.00,Monthly buy
+2026-04-22,Savings account,Cash,balance,Out,-285.08,,,Unexpected bill
+2026-04-25,Current account,Cash,balance,In,2735.63,,,Salary
+2026-04-27,Current account,Cash,balance,Out,-1922.34,,,Living costs
+2026-04-28,Stocks and Shares ISA,Investments,balance,In,287.62,,,Market movement
+2026-05-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-05-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-05-05,Savings account,Cash,balance,In,153.84,,,Monthly transfer
+2026-05-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2026-05-16,Solana,Crypto,quantity,In,49.71,0.40806107,121.82,Monthly buy
+2026-05-20,Gold,Precious metals,quantity,In,1012.96,0.5,2025.92,Half ounce purchase
+2026-05-25,Current account,Cash,balance,In,2782.38,,,Salary
+2026-05-27,Current account,Cash,balance,Out,-1926.55,,,Living costs
+2026-05-28,Stocks and Shares ISA,Investments,balance,In,76.91,,,Market movement
+2026-06-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-06-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-06-05,Savings account,Cash,balance,In,150.19,,,Monthly transfer
+2026-06-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2026-06-12,Bitcoin,Crypto,quantity,In,125.37,0.00201539,62206.38,Monthly buy
+2026-06-18,Silver,Precious metals,quantity,In,205.38,9,22.82,Coin purchase
+2026-06-25,Current account,Cash,balance,In,2901.58,,,Salary
+2026-06-27,Current account,Cash,balance,Out,-1801.11,,,Living costs
+2026-06-28,Stocks and Shares ISA,Investments,balance,In,106.84,,,Market movement
+2026-07-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-07-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-07-05,Savings account,Cash,balance,In,164.41,,,Monthly transfer
+2026-07-08,Debt,Debt,liability,Out,-320.00,,,Monthly repayment
+2026-07-12,Bitcoin,Crypto,quantity,In,198.03,0.00277092,71467.23,Monthly buy
+2026-07-25,Current account,Cash,balance,In,2789.57,,,Salary
+2026-07-27,Current account,Cash,balance,Out,-1903.15,,,Living costs
+2026-07-28,Stocks and Shares ISA,Investments,balance,In,97.33,,,Market movement
+2026-08-03,Lifetime ISA,Property savings,balance,In,333.00,,,Monthly transfer
+2026-08-04,Stocks and Shares ISA,Investments,balance,In,250.00,,,Monthly transfer
+2026-08-05,Savings account,Cash,balance,In,211.89,,,Monthly transfer
+2026-08-12,Bitcoin,Crypto,quantity,In,208.55,0.00328721,63442.86,Monthly buy
+2026-08-14,Ethereum,Crypto,quantity,In,144.42,0.05271688,2739.54,Monthly buy
+2026-08-18,Silver,Precious metals,quantity,In,117.05,5,23.41,Coin purchase
+2026-08-25,Current account,Cash,balance,In,2697.71,,,Salary
+2026-08-26,Savings account,Cash,balance,In,500.00,,,
+2026-08-26,Current account,Cash,balance,In,250.75,,,
+2026-08-26,Stocks and Shares ISA,Investments,balance,In,1000.00,,,
