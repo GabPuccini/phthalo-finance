@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phthalo Finance tests</title>
+<link rel="stylesheet" href="./styles.css">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<style>
+  .result { display: grid; grid-template-columns: 22px 1fr; gap: 8px;
+            padding: 9px 10px; border-bottom: 1px solid var(--hairline); font-size: 14px; }
+  .result:last-child { border-bottom: 0; }
+  .result-mark { font-weight: 700; text-align: center; }
+  .result.pass .result-mark { color: var(--positive-text); }
+  .result.fail .result-mark { color: var(--negative-text); }
+  .result.fail { background: color-mix(in srgb, var(--negative) 12%, transparent); }
+  .result-why { color: var(--negative-text); font-size: 13px; margin-top: 4px;
+                white-space: pre-wrap; word-break: break-word; }
+  .summary { font-size: 20px; font-weight: 700; }
+  .summary.pass { color: var(--positive-text); }
+  .summary.fail { color: var(--negative-text); }
+  .filters { display: flex; gap: 8px; margin: 12px 0; }
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="shell app-header-inner">
+    <h1 class="app-title"><span class="app-mark" aria-hidden="true"></span> Test results</h1>
+    <a class="button is-small" href="./index.html">Back to the app</a>
+  </div>
+</header>
+
+<main class="shell">
+  <div class="card" style="margin-top:14px">
+    <p class="summary" id="summary">Running...</p>
+    <p class="card-subtitle" id="detail">These are the same assertions that <code>node --test</code>
+      runs, loaded straight from tests/cases.js, so this page cannot drift away from the command
+      line suite.</p>
+    <div class="filters">
+      <button type="button" class="button is-small" id="show-all">Show everything</button>
+      <button type="button" class="button is-small" id="show-fail">Failures only</button>
+      <button type="button" class="button is-small" id="rerun">Run again</button>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:14px;padding:0" id="results"></div>
+
+  <div class="card" style="margin-top:14px">
+    <h2 class="card-title">Environment</h2>
+    <ul class="chart-key" style="flex-direction:column;align-items:flex-start;gap:4px" id="environment"></ul>
+  </div>
+</main>
+
+<script type="module">
+import { cases, useAssert } from './tests/cases.js';
+
+/* A small stand in for node:assert/strict, with the same semantics for the
+   handful of methods the cases use. */
+function describe(value) {
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (value === undefined) return 'undefined';
+  try { return JSON.stringify(value); } catch (error) { return String(value); }
+}
+
+function deepEqual(a, b) {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every((key) => Object.prototype.hasOwnProperty.call(b, key) && deepEqual(a[key], b[key]));
+}
+
+const assert = {
+  equal(actual, expected, message) {
+    if (!Object.is(actual, expected)) {
+      throw new Error(message
+        ? `${message}\n  expected ${describe(expected)}, got ${describe(actual)}`
+        : `expected ${describe(expected)}, got ${describe(actual)}`);
+    }
+  },
+  notEqual(actual, expected, message) {
+    if (Object.is(actual, expected)) {
+      throw new Error(message || `expected something other than ${describe(expected)}`);
+    }
+  },
+  ok(value, message) {
+    if (!value) throw new Error(message || `expected a truthy value, got ${describe(value)}`);
+  },
+  deepEqual(actual, expected, message) {
+    if (!deepEqual(actual, expected)) {
+      throw new Error(message
+        ? `${message}\n  expected ${describe(expected)}\n  got      ${describe(actual)}`
+        : `expected ${describe(expected)}\n  got      ${describe(actual)}`);
+    }
+  },
+  match(value, pattern, message) {
+    if (!pattern.test(String(value))) {
+      throw new Error(message || `expected ${describe(value)} to match ${pattern}`);
+    }
+  }
+};
+assert.strictEqual = assert.equal;
+assert.deepStrictEqual = assert.deepEqual;
+
+useAssert(assert);
+
+const resultsEl = document.getElementById('results');
+const summaryEl = document.getElementById('summary');
+const detailEl = document.getElementById('detail');
+
+async function run() {
+  resultsEl.innerHTML = '';
+  summaryEl.textContent = 'Running...';
+  summaryEl.className = 'summary';
+
+  let passed = 0;
+  const failures = [];
+  const started = performance.now();
+
+  for (const testCase of cases) {
+    let error = null;
+    try {
+      await testCase.fn();
+      passed += 1;
+    } catch (thrown) {
+      error = thrown;
+      failures.push(testCase.name);
+    }
+    const row = document.createElement('div');
+    row.className = `result ${error ? 'fail' : 'pass'}`;
+    row.innerHTML = `
+      <span class="result-mark" aria-hidden="true">${error ? '✗' : '✓'}</span>
+      <span>
+        <span>${testCase.name.replace(/[<&]/g, (c) => (c === '<' ? '&lt;' : '&amp;'))}</span>
+        ${error ? `<span class="result-why">${String(error.message)
+        .replace(/[<&]/g, (c) => (c === '<' ? '&lt;' : '&amp;'))}</span>` : ''}
+      </span>`;
+    resultsEl.appendChild(row);
+  }
+
+  const elapsed = Math.round(performance.now() - started);
+  const allPassed = failures.length === 0;
+  summaryEl.textContent = allPassed
+    ? `All ${passed} tests passed in ${elapsed}ms`
+    : `${failures.length} of ${cases.length} tests failed`;
+  summaryEl.className = `summary ${allPassed ? 'pass' : 'fail'}`;
+  detailEl.textContent = allPassed
+    ? 'These are the same assertions that node --test runs, loaded straight from tests/cases.js.'
+    : `Failed: ${failures.join(', ')}`;
+  document.title = allPassed ? `Tests passed (${passed})` : `Tests FAILED (${failures.length})`;
+}
+
+document.getElementById('show-all').addEventListener('click', () => {
+  resultsEl.querySelectorAll('.result').forEach((row) => { row.hidden = false; });
+});
+document.getElementById('show-fail').addEventListener('click', () => {
+  resultsEl.querySelectorAll('.result').forEach((row) => {
+    row.hidden = !row.classList.contains('fail');
+  });
+});
+document.getElementById('rerun').addEventListener('click', run);
+
+const env = document.getElementById('environment');
+const facts = [
+  ['Screen width', `${window.innerWidth}px`],
+  ['Device pixel ratio', String(window.devicePixelRatio || 1)],
+  ['Storage available', (() => {
+    try { localStorage.setItem('__t', '1'); localStorage.removeItem('__t'); return 'yes'; }
+    catch (error) { return 'no, private browsing?'; }
+  })()],
+  ['Service worker support', 'serviceWorker' in navigator ? 'yes' : 'no'],
+  ['Theme in use', document.documentElement.getAttribute('data-theme')],
+  ['Online', navigator.onLine ? 'yes' : 'no']
+];
+env.innerHTML = facts.map(([k, v]) =>
+  `<li><span class="key-name">${k}:</span> <span class="key-value">${v}</span></li>`).join('');
+
+run();
+</script>
+</body>
+</html>

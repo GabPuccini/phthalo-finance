@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en-GB" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Phthalo Finance</title>
+<meta name="description" content="A private net worth and savings tracker that keeps all of its data on your own device.">
+<meta name="theme-color" content="#000F26" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F8FB" media="(prefers-color-scheme: light)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Phthalo">
+<meta name="color-scheme" content="dark light">
+
+<!-- Every path is relative so the app works from a project subfolder. -->
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+<link rel="stylesheet" href="./styles.css">
+
+<script>
+  /* Resolve the saved theme before the first paint so there is no flash.
+     Kept inline and tiny on purpose. */
+  (function () {
+    try {
+      var raw = localStorage.getItem('phthalo.finance.v1');
+      var setting = 'system';
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.settings && parsed.settings.theme) setting = parsed.settings.theme;
+      }
+      var resolved = setting;
+      if (setting === 'system') {
+        /* Dark is the default, so light is only used when the system asks for it. */
+        resolved = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+          ? 'light' : 'dark';
+      }
+      document.documentElement.setAttribute('data-theme', resolved);
+    } catch (error) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  }());
+</script>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="shell app-header-inner">
+    <h1 class="app-title"><span class="app-mark" aria-hidden="true"></span> Phthalo Finance</h1>
+    <div style="display:flex;gap:2px">
+      <button type="button" class="button is-icon is-quiet" data-action="toggle-theme"
+              aria-label="Switch between the light and dark theme" title="Switch theme">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M20.5 14.5A8.5 8.5 0 0 1 9.5 3.5a8.5 8.5 0 1 0 11 11Z" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button type="button" class="button is-icon is-quiet" data-action="refresh-prices"
+              aria-label="Refresh unit prices from the internet" title="Refresh prices">
+        <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v4h-4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+  <div class="banner-area" id="banners" role="status" aria-live="polite"></div>
+</div>
+
+<main class="shell" id="main">
+  <section id="view-home" class="view" aria-label="Home"></section>
+  <section id="view-accounts" class="view" aria-label="Accounts" hidden></section>
+  <section id="view-activity" class="view" aria-label="Activity" hidden></section>
+  <section id="view-data" class="view" aria-label="Data and settings" hidden></section>
+</main>
+
+<nav class="tabbar" aria-label="Main">
+  <button type="button" data-action="go" data-view="home" aria-current="page">
+    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <path d="M4 19V9.5L12 4l8 5.5V19a1 1 0 0 1-1 1h-4v-6H9v6H5a1 1 0 0 1-1-1Z" stroke-linejoin="round"/>
+    </svg>
+    Home
+  </button>
+  <button type="button" data-action="go" data-view="accounts">
+    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18M7 15h4" stroke-linecap="round"/>
+    </svg>
+    Accounts
+  </button>
+  <button type="button" data-action="go" data-view="activity">
+    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <path d="M3 13h4l3 6 4-14 3 8h4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    Activity
+  </button>
+  <button type="button" data-action="go" data-view="data">
+    <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+      <ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v6c0 1.7 3.1 3 7 3s7-1.3 7-3V6" />
+      <path d="M5 12v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>
+    </svg>
+    Data
+  </button>
+</nav>
+
+<div class="sheet-backdrop" id="sheet-backdrop" hidden>
+  <div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title"></div>
+</div>
+
+<div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+
+<div class="recovery" id="recovery" hidden>
+  <div class="recovery-inner">
+    <h2>Something went wrong</h2>
+    <p id="recovery-message">The app hit an unexpected problem. Your saved data has not been touched.
+      Export a copy before you do anything else, then reload the page.</p>
+    <div class="banner-actions">
+      <button type="button" class="button is-primary" data-action="recovery-export">Export a backup</button>
+      <button type="button" class="button" data-action="recovery-reload">Reload the app</button>
+    </div>
+    <details>
+      <summary style="cursor:pointer;font-size:14px;min-height:44px;display:flex;align-items:center">Technical detail</summary>
+      <pre id="recovery-detail"></pre>
+    </details>
+  </div>
+</div>
+
+<noscript>
+  <div class="shell" style="padding-top:24px">
+    <p style="font-size:15px">Phthalo Finance needs JavaScript to work. Everything runs on your
+      own device and nothing is sent anywhere, but the app cannot draw the charts without it.</p>
+  </div>
+</noscript>
+
+<script type="module" src="./src/app.js"></script>
+</body>
+</html>
