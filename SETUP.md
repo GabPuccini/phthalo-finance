@@ -6,28 +6,33 @@ your phone.
 ## Where the code is right now
 
 This project was built in a temporary cloud container, which gets wiped once the session
-ends. So that nothing was lost, the whole thing, with its commit history, was pushed to a
-branch of the only repository that session could reach:
+ends. So that nothing was lost, the whole folder was committed to a branch of the only
+repository that session could reach:
 
 * Repository: `GabPuccini/CristianoRonaldo_Stats`
 * Branch: `claude/phthalo-finance-tracker-q0epur`
+* Path on that branch: `phthalo-finance/`
 
-**That branch is not part of the Cristiano Ronaldo site.** It shares no history with
-`master`, nothing in that project was touched, and the branch holds only Phthalo Finance
-at its root. Do not merge it into `master`. It is a parking space, nothing more.
+**It is not part of the Cristiano Ronaldo site.** Nothing in that project was touched;
+the commit only adds a new folder. It is parked there and nothing more. Do not deploy the
+Cristiano Ronaldo repository expecting to get this app.
 
-To get the project onto your own machine as a standalone repository:
+To pull the folder out and give it a repository of its own:
 
 ```sh
 git clone -b claude/phthalo-finance-tracker-q0epur --single-branch \
-  https://github.com/GabPuccini/CristianoRonaldo_Stats.git phthalo-finance
+  https://github.com/GabPuccini/CristianoRonaldo_Stats.git parked
+cp -r parked/phthalo-finance ./phthalo-finance
+rm -rf parked
+
 cd phthalo-finance
-git remote remove origin
+git init -b main
+git add -A
+git commit -m "Phthalo Finance"
 ```
 
-You now have the folder, the files and the commit history, with no remote attached. Carry
-on with part one below to give it a repository of its own. Once that is done the parking
-branch can be deleted:
+You now have the project on its own, with no remote attached. Carry on with part one
+below. Once it has a repository of its own, the parking branch can go:
 
 ```sh
 git push https://github.com/GabPuccini/CristianoRonaldo_Stats.git \
