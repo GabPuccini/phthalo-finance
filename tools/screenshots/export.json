@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "createdAt": "2025-08-01",
-  "updatedAt": "2026-08-26T17:18:37.471Z",
+  "updatedAt": "2026-08-26T17:21:07.364Z",
   "lastExportAt": null,
   "settings": {
     "theme": "system",
@@ -1574,7 +1574,7 @@
       "createdAt": "2026-08-18T09:08:00.000Z"
     },
     {
-      "id": "tx_mtacy1kt_9ucd5t",
+      "id": "tx_mtad19c8_vohv9s",
       "accountId": "acc_savings",
       "date": "2026-08-26",
       "direction": "in",
@@ -1582,10 +1582,10 @@
       "unitsE8": 0,
       "unitPricePence": null,
       "note": "",
-      "createdAt": "2026-08-26T17:18:23.357Z"
+      "createdAt": "2026-08-26T17:20:53.384Z"
     },
     {
-      "id": "tx_mtacy2qv_8n7h72",
+      "id": "tx_mtad1aj8_25l4o2",
       "accountId": "acc_current",
       "date": "2026-08-26",
       "direction": "in",
@@ -1593,10 +1593,10 @@
       "unitsE8": 0,
       "unitPricePence": null,
       "note": "",
-      "createdAt": "2026-08-26T17:18:24.871Z"
+      "createdAt": "2026-08-26T17:20:54.932Z"
     },
     {
-      "id": "tx_mtacy3x1_gsq5cw",
+      "id": "tx_mtad1bov_v9r56m",
       "accountId": "acc_ssisa",
       "date": "2026-08-26",
       "direction": "in",
@@ -1604,10 +1604,10 @@
       "unitsE8": 0,
       "unitPricePence": null,
       "note": "",
-      "createdAt": "2026-08-26T17:18:26.389Z"
+      "createdAt": "2026-08-26T17:20:56.431Z"
     },
     {
-      "id": "tx_mtacy73u_ou322j",
+      "id": "tx_mtad1eub_ewboos",
       "accountId": "acc_current",
       "date": "2026-02-26",
       "direction": "in",
@@ -1615,7 +1615,7 @@
       "unitsE8": 0,
       "unitPricePence": null,
       "note": "",
-      "createdAt": "2026-08-26T17:18:30.522Z"
+      "createdAt": "2026-08-26T17:21:00.515Z"
     }
   ],
   "visuals": [

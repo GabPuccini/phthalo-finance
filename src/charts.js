@@ -19,10 +19,8 @@
 
 import {
   CATEGORIES,
-  CATEGORY_COLOURS,
   RANGE_PRESETS,
   VISUAL_LIBRARY,
-  addMonths,
   allocationByCategory,
   allocationTitle,
   balancesAt,

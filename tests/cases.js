@@ -1118,3 +1118,126 @@ test('a brand new install has the ten default accounts and no transactions', asy
   assert.ok(L.allocationByCategory(state, TODAY).every((r) => r.fraction === 0));
   assert.equal(L.contributionsByMonth(state, { today: TODAY }).length, 12);
 });
+
+/* ------------------------------------------------------------------ */
+/* Price refresh                                                       */
+/*                                                                     */
+/* fetch is stubbed here. The live endpoints are deliberately not       */
+/* called by the test suite, so the tests stay offline and repeatable.  */
+/* ------------------------------------------------------------------ */
+
+const quantityAccounts = [
+  { id: 'acc_bitcoin', name: 'Bitcoin', type: 'quantity', unitPricePence: 100, archived: false },
+  { id: 'acc_gold', name: 'Gold', type: 'quantity', unitPricePence: 200, archived: false },
+  { id: 'acc_savings', name: 'Savings', type: 'balance', archived: false },
+  { id: 'acc_mystery', name: 'Palladium', type: 'quantity', unitPricePence: 300, archived: false }
+];
+
+async function withStubbedFetch(handler, run) {
+  const original = globalThis.fetch;
+  globalThis.fetch = handler;
+  try {
+    return await run();
+  } finally {
+    if (original === undefined) delete globalThis.fetch;
+    else globalThis.fetch = original;
+  }
+}
+
+function jsonResponse(body, status = 200) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    text: () => Promise.resolve(typeof body === 'string' ? body : JSON.stringify(body))
+  });
+}
+
+test('a good price response is parsed into pence', async () => {
+  const prices = await import('../src/prices.js');
+  const result = await withStubbedFetch((url) => {
+    if (String(url).includes('coingecko')) return jsonResponse({ bitcoin: { gbp: 68000.55 } });
+    if (String(url).includes('frankfurter')) return jsonResponse({ rates: { GBP: 0.8 } });
+    if (String(url).includes('XAU')) return jsonResponse({ price: 2500 });
+    return jsonResponse({}, 404);
+  }, () => prices.fetchPrices(quantityAccounts));
+
+  assert.equal(result.prices.get('acc_bitcoin'), 6800055, 'pounds converted to whole pence');
+  assert.equal(result.prices.get('acc_gold'), 200000, '2500 dollars at 0.8 is 2000 pounds');
+  assert.equal(result.prices.has('acc_savings'), false, 'balance accounts have no unit price');
+  assert.equal(result.skipped.length, 1, 'an unknown symbol is skipped, not failed');
+  assert.equal(result.skipped[0].name, 'Palladium');
+  assert.equal(result.failures.length, 0);
+});
+
+test('a malformed price response is treated as a failure, not as a price', async () => {
+  const prices = await import('../src/prices.js');
+  const result = await withStubbedFetch(() => jsonResponse('<html>not json</html>'),
+    () => prices.fetchPrices(quantityAccounts));
+  assert.equal(result.prices.size, 0, 'no price is taken from rubbish');
+  assert.ok(result.failures.length >= 1);
+  assert.match(result.failures[0].reason, /not JSON/i);
+});
+
+test('a rate limited or dead endpoint fails safely', async () => {
+  const prices = await import('../src/prices.js');
+  const result = await withStubbedFetch(() => jsonResponse({ error: 'slow down' }, 429),
+    () => prices.fetchPrices(quantityAccounts));
+  assert.equal(result.prices.size, 0);
+  assert.match(result.failures[0].reason, /429/);
+  assert.match(prices.describeResult(result), /kept the last manual price/);
+});
+
+test('a thrown fetch, which is what offline looks like, fails safely', async () => {
+  const prices = await import('../src/prices.js');
+  const result = await withStubbedFetch(() => Promise.reject(new TypeError('Failed to fetch')),
+    () => prices.fetchPrices(quantityAccounts));
+  assert.equal(result.prices.size, 0);
+  assert.match(result.failures[0].reason, /Could not reach/);
+});
+
+test('a price of zero or a negative price is refused', async () => {
+  const prices = await import('../src/prices.js');
+  const result = await withStubbedFetch((url) => {
+    if (String(url).includes('coingecko')) return jsonResponse({ bitcoin: { gbp: 0 } });
+    if (String(url).includes('frankfurter')) return jsonResponse({ rates: { GBP: 0.8 } });
+    return jsonResponse({ price: -5 });
+  }, () => prices.fetchPrices(quantityAccounts));
+  assert.equal(result.prices.size, 0, 'a nonsense price never replaces a manual one');
+  assert.equal(result.failures.length, 2);
+});
+
+test('the refresh gives up after five seconds rather than hanging', async () => {
+  const prices = await import('../src/prices.js');
+  assert.equal(prices.REQUEST_TIMEOUT_MS, 5000);
+
+  // A fetch that never settles unless it is aborted.
+  const result = await withStubbedFetch((url, options) => new Promise((resolve, reject) => {
+    const signal = options && options.signal;
+    if (!signal) return;
+    if (signal.aborted) {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+      return;
+    }
+    signal.addEventListener('abort', () => {
+      const error = new Error('aborted');
+      error.name = 'AbortError';
+      reject(error);
+    });
+  }), () => prices.fetchPrices([quantityAccounts[0]]));
+
+  assert.equal(result.prices.size, 0);
+  assert.match(result.failures[0].reason, /No reply within 5 seconds/);
+});
+
+test('which symbol to look up is worked out from the account', async () => {
+  const prices = await import('../src/prices.js');
+  assert.deepEqual(prices.symbolFor({ id: 'acc_gold', type: 'quantity' }), { kind: 'metal', id: 'XAU' });
+  assert.deepEqual(prices.symbolFor({ id: 'custom', name: 'Bitcoin', type: 'quantity' }),
+    { kind: 'crypto', id: 'bitcoin' });
+  assert.deepEqual(prices.symbolFor({ id: 'x', type: 'quantity', priceKind: 'crypto', priceSymbol: 'cardano' }),
+    { kind: 'crypto', id: 'cardano' });
+  assert.equal(prices.symbolFor({ id: 'x', name: 'Premium Bonds', type: 'balance' }), null);
+  assert.equal(prices.symbolFor(null), null);
+});

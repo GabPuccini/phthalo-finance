@@ -65,7 +65,7 @@ async function safeJson(url) {
     let data;
     try {
       data = JSON.parse(text);
-    } catch (parseError) {
+    } catch {
       return { ok: false, reason: 'The price service sent something that was not JSON.' };
     }
     if (data === null || typeof data !== 'object') {
@@ -194,7 +194,7 @@ export async function fetchPrices(accounts) {
 
   try {
     await Promise.all(jobs);
-  } catch (error) {
+  } catch {
     // Nothing above rejects, but a surprise here must not break the app.
     for (const w of wanted) {
       if (!prices.has(w.account.id) && !failures.some((f) => f.accountId === w.account.id)) {

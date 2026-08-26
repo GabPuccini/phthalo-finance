@@ -41,7 +41,7 @@ self.addEventListener('install', (event) => {
     await Promise.all(PRECACHE.map(async (path) => {
       try {
         await cache.add(new Request(path, { cache: 'reload' }));
-      } catch (error) {
+      } catch {
         // A missing optional file must not stop the app installing.
       }
     }));
@@ -81,7 +81,7 @@ self.addEventListener('fetch', (event) => {
         const cache = await caches.open(CACHE_NAME);
         cache.put('./index.html', fresh.clone());
         return fresh;
-      } catch (error) {
+      } catch {
         const cached = await caches.match('./index.html');
         return cached || new Response(
           '<h1>Offline</h1><p>Phthalo Finance is not in the cache yet. '
@@ -104,7 +104,7 @@ self.addEventListener('fetch', (event) => {
             const cache = await caches.open(CACHE_NAME);
             await cache.put(request, fresh);
           }
-        } catch (error) {
+        } catch {
           // Offline is fine, the cached copy was already returned.
         }
       })());
@@ -117,7 +117,7 @@ self.addEventListener('fetch', (event) => {
         cache.put(request, fresh.clone());
       }
       return fresh;
-    } catch (error) {
+    } catch {
       return new Response('', { status: 504, statusText: 'Offline and not cached' });
     }
   })());

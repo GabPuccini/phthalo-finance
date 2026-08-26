@@ -7,29 +7,24 @@
 
 import {
   CATEGORIES,
-  DEFAULT_VISUALS,
   VISUAL_LIBRARY,
   activeAccounts,
   addDays,
   balancesAt,
   checkWithdrawal,
-  colourForAccount,
   dateToISO,
-  daysBetween,
   describeTimeRemaining,
   formatMoney,
   formatUnits,
   goalProgress,
   isValidISODate,
   netWorthAt,
-  normaliseState,
   parseMoneyToPence,
   parseUnitsToE8,
   projectPayoff,
   averageMonthlyRepayment,
   quantityValuePence,
   sortedTransactions,
-  timeRemaining,
   transactionsToCsv,
   unitsForPence,
   assignAccountColours
@@ -38,7 +33,7 @@ import {
 import { renderVisual, esc, seriesVar } from './charts.js';
 import { demoState, emptyStateWithDefaults } from './seed.js';
 import * as store from './storage.js';
-import { fetchPrices, describeResult, symbolFor } from './prices.js';
+import { fetchPrices, describeResult } from './prices.js';
 
 /* ------------------------------------------------------------------ */
 /* Global safety net, installed before anything else can run           */
@@ -59,7 +54,7 @@ function showRecovery(what, detail) {
     }
     if (pre) pre.textContent = String(detail || '').slice(0, 4000);
     if (screen) screen.hidden = false;
-  } catch (error) {
+  } catch {
     // If even this fails there is nothing sensible left to do.
   }
 }
@@ -1725,7 +1720,7 @@ const ACTIONS = {
       const snapshot = store.rawSnapshot();
       store.downloadText(`phthalo-finance-recovery-${todayISO()}.json`,
         snapshot.primary || store.toExportJson(app.state || {}), 'application/json');
-    } catch (error) {
+    } catch {
       window.alert('The export could not run. Copy the technical detail below and reload.');
     }
   },

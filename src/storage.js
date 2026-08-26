@@ -40,7 +40,7 @@ export function storageAvailable() {
     window.localStorage.setItem(probe, '1');
     window.localStorage.removeItem(probe);
     return true;
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -115,7 +115,7 @@ export function load(todayISO = dateToISO(new Date())) {
             + 'Please export a backup now.',
           corruptRaw: primary.value
         };
-      } catch (backupError) {
+      } catch {
         // Both copies are gone. Fall through.
       }
     }
@@ -176,7 +176,7 @@ export function save(state) {
     if (current) window.localStorage.setItem(BACKUP_KEY, current);
   } catch (error) {
     if (isQuotaError(error)) {
-      try { window.localStorage.removeItem(BACKUP_KEY); } catch (ignored) { /* nothing to do */ }
+      try { window.localStorage.removeItem(BACKUP_KEY); } catch { /* nothing to do */ }
     }
   }
 
@@ -196,7 +196,7 @@ export function save(state) {
           message: 'Storage was full, so the rolling backup was cleared to make room. '
             + 'Your change was saved. Export a backup and consider deleting old entries.'
         };
-      } catch (retryError) {
+      } catch {
         return {
           ok: false,
           reason: 'quota',
@@ -220,7 +220,7 @@ export function clearAll() {
     window.localStorage.removeItem(STORAGE_KEY);
     window.localStorage.removeItem(BACKUP_KEY);
     return { ok: true };
-  } catch (error) {
+  } catch {
     return { ok: false, message: 'The saved data could not be removed from this browser.' };
   }
 }
@@ -309,7 +309,7 @@ export function daysSinceExport(state, todayISO) {
     const then = new Date(`${state.lastExportAt}T00:00:00Z`).getTime();
     const now = new Date(`${todayISO}T00:00:00Z`).getTime();
     return Math.round((now - then) / 86400000);
-  } catch (error) {
+  } catch {
     return null;
   }
 }
