@@ -20,7 +20,7 @@
  * subfolder on GitHub Pages, not from the domain root.
  */
 
-const CACHE_VERSION = 'fa54b3b0fa48';
+const CACHE_VERSION = '7c57d128f2b6';
 const CACHE_NAME = `phthalo-finance-${CACHE_VERSION}`;
 
 const PRECACHE = [

@@ -23,6 +23,7 @@ import {
   formatMoney,
   formatUnits,
   goalProgress,
+  highestBalance,
   isValidISODate,
   netWorthAt,
   parseMoneyToPence,
@@ -1160,6 +1161,9 @@ function goalForm(accountId) {
   const today = todayISO();
   const entry = balancesAt(app.state, today).get(account.id) || { valuePence: 0 };
   const goal = account.goal;
+  // A savings pace line starts from today's balance. A debt starts from the
+  // highest it has been, so the goal does not open at 0 percent paid off.
+  const defaultStart = isDebt ? highestBalance(app.state, account.id) : entry.valuePence;
 
   openSheet(`Goal for ${account.name}`, `
     <form data-form="goal" data-arg="${esc(account.id)}" novalidate>
@@ -1178,8 +1182,10 @@ function goalForm(accountId) {
       <div class="field">
         <label for="goal-start">Starting point</label>
         <input class="input" id="goal-start" name="start" type="text" inputmode="decimal"
-               value="${esc(goal ? (goal.startPence / 100).toFixed(2) : (entry.valuePence / 100).toFixed(2))}" autocomplete="off">
-        <p class="field-hint">Where you were when the goal began. The pace check draws a straight line from here.</p>
+               value="${esc(goal ? (goal.startPence / 100).toFixed(2) : (defaultStart / 100).toFixed(2))}" autocomplete="off">
+        <p class="field-hint">${isDebt
+    ? 'What you owed when you started paying it down. Progress is measured from here.'
+    : 'Only used for the pace check, a straight line from here to the target. The percentage is always what you have saved over the target.'}</p>
         <p class="field-error" data-error="start" hidden></p>
       </div>
       <div class="form-actions">

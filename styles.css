@@ -185,6 +185,7 @@ svg { display: block; }
 
 .icon-button {
   width: var(--tap); height: var(--tap);
+  flex: none;                 /* never squeezed below the 44px target by a long title */
   display: grid; place-items: center;
   border: 0; border-radius: 50%;
   background: transparent; color: var(--ink);

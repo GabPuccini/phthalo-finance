@@ -568,6 +568,22 @@ export function balancesAt(state, dateISO) {
   return byId;
 }
 
+/**
+ * The highest balance an account has had, walking its whole history. For a
+ * debt this is the natural starting point of a payoff goal, so a new goal
+ * does not read 0 percent paid off on the day it is set.
+ */
+export function highestBalance(state, accountId) {
+  let running = 0;
+  let highest = 0;
+  for (const tx of sortedTransactions(state)) {
+    if (tx.accountId !== accountId) continue;
+    running += signedPence(tx);
+    if (running > highest) highest = running;
+  }
+  return highest;
+}
+
 /** Net worth on a date: assets minus liabilities, in pence. */
 export function netWorthAt(state, dateISO) {
   const balances = balancesAt(state, dateISO);
@@ -833,13 +849,19 @@ export function goalProgress(account, currentPence, todayISO) {
   const targetDate = isValidISODate(goal.targetDate) ? goal.targetDate : null;
 
   const totalDistance = isDebt ? (startPence - target) : (target - startPence);
-  const travelled = isDebt ? (startPence - current) : (current - startPence);
   const remaining = isDebt ? Math.max(0, current - target) : Math.max(0, target - current);
 
-  // Percentage reached. A zero sized goal is already complete by definition.
+  // Percentage reached. For savings this is simply what is saved over the
+  // target: £1,500 toward £20,000 is 7.5 percent, whatever the balance was
+  // when the goal was set. The starting point only draws the pace line.
+  // (It once measured progress since the starting point, and because the
+  // form fills that in with today's balance, a new goal always read 0%.)
+  // A debt has no meaningful share of a target of zero, so its percentage
+  // is how much of the starting debt has been paid off.
+  // A zero sized goal is already complete by definition.
   let fraction;
-  if (totalDistance <= 0) fraction = 1;
-  else fraction = travelled / totalDistance;
+  if (isDebt) fraction = totalDistance <= 0 ? 1 : (startPence - current) / totalDistance;
+  else fraction = target <= 0 ? 1 : current / target;
   if (!Number.isFinite(fraction)) fraction = 0;
   const rawPercent = fraction * 100;
   const percent = Math.max(0, Math.min(100, rawPercent));
@@ -904,7 +926,7 @@ export function goalProgress(account, currentPence, todayISO) {
     exceeded,
     reached,
     overdue,
-    zeroTarget: totalDistance <= 0,
+    zeroTarget: isDebt ? totalDistance <= 0 : target <= 0,
     daysRemaining,
     timeRemaining: tr,
     rates,
@@ -1407,7 +1429,10 @@ export function seriesChange(series) {
   const first = series[0].netWorthPence;
   const last = series[series.length - 1].netWorthPence;
   const absolute = last - first;
-  const hasBase = first !== 0;
+  // A percentage change only means something from a positive starting
+  // point. From minus £4,651 to plus £1,032 is not "up 122 percent", so
+  // a zero or negative start reports the amount instead.
+  const hasBase = first > 0;
   return {
     absolutePence: absolute,
     fraction: hasBase ? absolute / Math.abs(first) : 0,

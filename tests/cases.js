@@ -443,6 +443,36 @@ test('goal with a target date in the future', () => {
   assert.equal(p.timeRemaining.years, 1);
 });
 
+test('a goal percentage is what is saved over the target, whatever the starting point', () => {
+  // The reported bug: £1,500 in a Lifetime ISA with a £20,000 goal read 0%,
+  // because the form fills in the starting point with today's balance and
+  // the percentage was measured from there.
+  const acc = goalAccount({
+    targetPence: 2000000, targetDate: '2028-04-01', startDate: TODAY, startPence: 150000
+  });
+  const p = L.goalProgress(acc, 150000, TODAY);
+  assert.equal(p.percent, 7.5, '£1,500 of £20,000 is 7.5 percent');
+  assert.equal(Math.round(p.percent), 8);
+  assert.equal(p.remainingPence, 1850000);
+  // The starting point still drives the pace line: on day one you are level with it.
+  assert.equal(p.pace.status, 'on track');
+  assert.equal(p.pace.expectedPence, 150000);
+});
+
+test('a debt starts its payoff goal from its highest balance', () => {
+  const state = makeState(
+    [account('debt', 'Debt', 'liability', 'Debt')],
+    [tx('debt', '2026-04-01', 'in', 9031), tx('debt', '2026-05-01', 'out', 188), tx('debt', '2026-06-01', 'out', 188)]
+  );
+  assert.equal(L.highestBalance(state, 'debt'), 903100);
+  assert.equal(L.highestBalance(state, 'nothing'), 0);
+  const debt = account('debt', 'Debt', 'liability', 'Debt', {
+    goal: { targetPence: 0, targetDate: '2032-03-01', startDate: '2026-04-01', startPence: L.highestBalance(state, 'debt') }
+  });
+  const p = L.goalProgress(debt, 903100 - 37600, TODAY);
+  assert.equal(Math.round(p.percent * 10) / 10, 4.2, '£376 of £9,031 repaid is about 4.2 percent');
+});
+
 test('goal pace marker says ahead or behind correctly', () => {
   const acc = goalAccount({
     targetPence: 1200000, targetDate: '2027-08-26', startDate: '2026-08-26', startPence: 0
@@ -1014,6 +1044,11 @@ test('series change reports the move over the window', () => {
   assert.equal(Math.round(change.fraction * 100), 20);
   const fromZero = L.seriesChange([{ netWorthPence: 0 }, { netWorthPence: 5000 }]);
   assert.equal(fromZero.hasBase, false, 'no percentage is possible from a zero base');
+  const fromDebt = L.seriesChange([{ netWorthPence: -465100 }, { netWorthPence: 103200 }]);
+  assert.equal(fromDebt.hasBase, false, 'nor from a negative one');
+  assert.equal(fromDebt.absolutePence, 568300);
+  assert.equal(L.netWorthTitle([{ netWorthPence: -465100 }, { netWorthPence: 103200 }], '1y'),
+    'Net worth up £5,683.00 over the last year', 'from a negative start the title gives the amount');
   assert.equal(L.seriesChange([]).absolutePence, 0);
 });
 
