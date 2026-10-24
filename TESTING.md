@@ -1,203 +1,186 @@
 # Testing
 
-What was actually run, what it said, and what is not covered. Everything below was
-executed rather than described.
+What was actually run for the October 2026 redesign, what it said, and what is not
+covered. Everything below was executed rather than described.
 
-Environment: Node v22.22.2 on Linux, Chromium 141.0.7390.37 driven by Playwright,
-viewport 375 by 812 at a device pixel ratio of 2.
+Environment: Node v22.22.0 on Linux, Chromium driven by Playwright 1.63, viewport 375 by
+812 at a device pixel ratio of 2, in both themes.
 
 ## Automated tests
 
 ```
 $ node --test
 
-1..77
-# tests 77
+# tests 87
 # suites 0
-# pass 77
+# pass 87
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 5192.919531
+# duration_ms 5294.240927
 ```
 
-Nothing needs installing to run this. The five seconds is almost entirely one test that
-genuinely waits out the five second price lookup timeout rather than faking it.
+Nothing needs installing to run this. Most of the five seconds is one test that genuinely
+waits out the five second price lookup timeout.
 
-The assertions live in `tests/cases.js` and are shared by the Node runner and by
-`tests.html`, so the browser page cannot drift away from the command line suite. Opening
-`tests.html` in Chromium reports **All 77 tests passed** with a clean console.
+84 of the 87 live in `tests/cases.js` and also run in the browser: opening `tests.html`
+reports **All 84 tests passed** with a clean console. The other three need the file
+system, so they run under Node only:
 
-### What the 77 cover
+* `styles.css` carries exactly the colours in `src/logic.js`, which are the measured ones.
+* The service worker caches every file and every module the app needs.
+* `CACHE_VERSION` has been stamped since the cached files last changed.
 
-Everything on the agreed list, plus what came up while building:
+### What they cover
 
 | Area | Cases |
 | --- | --- |
 | Net worth | mixed assets and debt, a negative total, category totals, allocation, sorting with debt last |
-| No drift | add then withdraw returns to the exact starting balance, and a thousand round trips of a penny leave zero |
-| Backdating | an entry inserted between two existing ones, the same entries supplied out of order, editing an old entry, moving an entry's date, deleting one |
-| Quantity holdings | a zero price, a missing price, a large holding that would drift in floating point, historic value at the price recorded at the time |
-| Dates | impossible dates rejected, both British daylight saving changes, month boundaries, leap days, month arithmetic clamping |
-| Goals | future date, past date, already exceeded, target of zero, balance of zero, pace ahead and behind, debt counting down |
-| Saving rates | one day left, zero days left, negative days, nothing left to save |
-| Debt | payoff with and without interest, a payment that never clears the debt, no payments at all, average repayment |
-| Formatting | zero, large, negative, the ten thousand abbreviation boundary, units, input parsing rejecting text |
-| CSV | commas and quotes escaped, withdrawals signed, an empty ledger |
-| Import | malformed JSON, empty file, right shape with wrong types, an unknown account type, an orphan transaction, a file from a newer version |
-| Migration | a version 0 object upgraded, migration not applied twice, rubbish input not wiping data |
-| Prices | a good response, malformed JSON, a rate limited endpoint, an offline throw, a nonsense price, the five second timeout, symbol resolution |
-| Demo data | internally consistent, no negative holdings, nothing dated in the future, repeatable |
-| Palette | every text colour measured against both backgrounds in both themes, label readability on every fill, colour assignment |
-
-Two bugs were found by writing these tests rather than by reading the code:
-
-* The month arithmetic under borrowed. From 31 January to 1 March it returned minus two
-  days. It now counts whole months first and takes the leftover, which follows the same
-  end of month clamping as adding a month.
-* The demo data generator sold Solana it had never bought, leaving a holding of minus
-  6.04 units. It now tracks running balances and can never produce a negative position.
+| No drift | add then withdraw returns to the exact starting balance; a thousand round trips of a penny leave zero |
+| Backdating | an entry between two others, entries supplied out of order, editing an old entry, moving its date, deleting one |
+| Account history | built the same way as net worth, other accounts left out, debt reported as the amount owed, a one year cap, archived and empty accounts |
+| Quantity holdings | a zero or missing price, a large holding that would drift in floating point, historic value at the price recorded at the time |
+| Dates | impossible dates, both daylight saving changes, month boundaries, leap days, month end clamping |
+| Goals | future date, past date, exceeded, target of zero, zero balance, pace ahead and behind, debt counting down |
+| Saving rates | one day left, none left, negative days, nothing left to save |
+| Debt | payoff with and without interest, a payment that never clears it, no payments, average repayment |
+| Formatting and input | zero, large, negative, the ten thousand boundary, units, text rejected |
+| CSV, import, migration | escaping, signed withdrawals, malformed and empty files, wrong types, a version 0 file, an old saved layout |
+| Prices | a good response, malformed JSON, rate limiting, offline, a nonsense price, the five second timeout |
+| Palette | every text colour on every background in both themes, button labels, chart marks, category badges, the fixed allocation order |
 
 ## Browser testing
 
 ```
 $ node tools/browser-smoke.mjs
 
-94 of 94 checks passed
+106 of 106 checks passed
 ```
 
-This drives the real app in Chromium. It serves the site from the **parent** directory
-on purpose, so every page loads from `/phthalo-finance/` rather than the domain root.
-That is the GitHub Pages project site case and it is exactly where an absolute path
-would break.
+The site is served from the **parent** directory, so every page loads from
+`/phthalo-finance/` as it does on GitHub Pages.
 
-### The thirteen manual steps
+### Your thirteen steps
 
 | # | Step | Result |
 | --- | --- | --- |
-| 1 | First load with empty storage | **Pass.** Five cards, net worth `£0.00`, five charts drawing a labelled empty state, no blank card, clean console. |
-| 2 | Load the demo data | **Pass.** 130 entries, net worth £55,150.39, eight charts drawn, 43 bars, no chart stuck on its empty state. Titles read "Net worth up 133 percent over the last 1 year", "Cash is your largest category at 33 percent", "2 of 4 goals are behind pace". |
-| 3 | Add money to three accounts | **Pass.** Net worth moved by exactly £1,750.75 across the three, every chart redrew, and the page never reloaded. |
-| 4 | Withdraw, including too much | **Pass.** A normal withdrawal went through. Trying to take £999,999 from £3,961.22 showed "That takes Savings account to minus £996,037.78, which is below zero" and kept the form open. Pressing save a second time records it anyway, which a correcting entry sometimes needs. |
-| 5 | Backdated entry | **Pass.** An entry dated six months back changed the line from day 209 of 391, not from today, and the end of the line moved by exactly 200000 pence. The series stayed in strict date order. |
-| 6 | Edit then delete | **Pass.** The edit stored 4242 pence exactly. The delete removed exactly one entry. |
-| 7 | Goal maths | **Pass.** Checked against sums done independently inside the test: percentage 40.6122 against 40.6122, amount still needed, and the per day, per week and per month rates all matched to the penny. The countdown read in plain English and the pace marker drew. |
-| 8 | Custom account and visual | **Pass.** Added "Premium Bonds", confirmed every asset account still had a distinct colour, switched a gallery visual on and off, reordered the visuals, then deleted the account. The delete confirmation named the entry count and offered an export first. |
-| 9 | Export, clear, import | **Pass.** JSON export downloaded as `phthalo-finance-2026-08-26.json`. CSV export had a header and a row per entry. Clearing emptied everything. Importing reproduced a byte for byte identical state. A deliberately broken file was refused with a reason and nothing was half loaded. |
-| 10 | Reload | **Pass.** Accounts, entries and net worth identical to the penny after a reload. |
-| 11 | 375px wide | **Pass.** No sideways scroll on any of the four tabs. Every control on every tab, and inside both sheets, measures at least 44 by 44. |
-| 12 | Both themes | **Pass.** The toggle switches, all eight charts render in both, and every text token measured at or above 4.5 to 1 against both its backgrounds. |
-| 13 | Console | **Pass, with one note below.** |
+| 1 | First load, empty storage | **Pass.** Net worth `£0.00`, the ten default accounts, a labelled empty state on the chart and on all four Insights charts, the welcome message, no reload, clean console. |
+| 2 | Load the demo data | **Pass.** Plausible net worth, the hero line drawn, four goal progress bars visible on Home, every Insights chart drawn with a finding for a title and a table of its numbers, account bars in one colour with debt in red. |
+| 3 | Add money to three accounts | **Pass.** Net worth moved by exactly £1,750.75 with no reload. The add button lists all ten accounts. |
+| 4 | Withdraw, including too much | **Pass.** A normal withdrawal went through. £999,999 from a few thousand warned "below zero" and kept the form open. |
+| 5 | Backdated entry | **Pass.** The line changes from the backdated day itself, not from today, and stays in strict date order. |
+| 6 | Edit then delete | **Pass.** The edit stored 4242 pence exactly; the delete removed exactly one entry. |
+| 7 | Goal maths | **Pass.** Days remaining, percentage, amount still needed and the daily, weekly and monthly rates all match sums done independently in the test, and the goal screen's ring, rates, target date and countdown show those same figures. |
+| 8 | Custom account and chart | **Pass.** Added "Premium Bonds" with its category badge, switched a chart on and off, reordered charts, then deleted the account, which named its entry count and offered an export first. |
+| 9 | Export, clear, import | **Pass.** A dated JSON file and a CSV with a row per entry. After clearing and importing, the state is byte for byte identical. A broken file was refused and nothing was half loaded. |
+| 10 | Reload | **Pass.** Accounts, entries and net worth identical to the penny. |
+| 11 | 375px wide | **Pass.** No sideways scroll on any tab or on an account. Every control on every tab, the account screen, its records and the entry form is at least 44 by 44. |
+| 12 | Both themes | **Pass.** Every text colour, as actually rendered, reaches AA on surface, canvas and raised fills in the light theme; charts draw in both. |
+| 13 | Console | **Pass, with one note.** Clean throughout. During the deliberate offline test Chromium logs four network lines of its own, which no page can suppress; the app caught each one. |
 
-### Extra checks beyond the thirteen
+### Beyond the thirteen
 
-* **Offline.** With the network disconnected the app still loads, still draws, and still
-  shows the data. A price refresh with no network kept every manual price unchanged,
-  showed "Prices left as they were, 5 kept the last manual price", and left the app
-  fully usable.
-* **Storage disabled.** With `localStorage` throwing a `SecurityError` on every call, the
-  app loads, warns clearly, offers a backup download, and never throws.
-* **Quota exceeded.** With writes throwing `QuotaExceededError`, the change is reported
-  as not saved, a backup download is offered, and the change stays on screen.
-* **Corrupt data.** Damaged JSON with no backup shows a banner, offers to download the
-  damaged file, leaves the damaged value in storage rather than deleting it, and the app
-  still runs. Damaged JSON *with* a good rolling backup loads the backup and says so.
-* **Migration in the browser.** A version 0 object with money as floating point pounds
-  was upgraded on load: pounds became integer pence, a negative amount became a
-  withdrawal, the goal survived, the quantity account kept its type, and nothing was
-  dropped.
-* **A single account.** With one account and two entries, all eight visuals render, none
-  errors, none is blank, net worth reads `£2,000.00`, and every card still carries a
-  plain English title, including "Savings account holds 100 percent of your assets" and
-  "No quantity based holdings yet".
-* **Interface wording.** The rendered text of the home screen, header, tab bar and
-  banners was scraped and checked: no em dashes, no en dashes, no hyphenated words.
-* **Wide screens.** No sideways scroll at 1024px, and the grid moves to three columns.
-* **Subfolder serving.** Every page above was loaded from `/phthalo-finance/`.
+* **The account screen.** It hides the tab bar, the add button steps aside on the goal tab
+  where Add money and Withdraw are already in view, and Records lists every entry.
+* **The back gesture.** The phone's back returns from an account to Home, and with a form
+  open it closes the form first and stays on the account.
+* **The crosshair.** Moving along the net worth line shows that day's value and date, and
+  it resets when the pointer leaves.
+* **Offline.** The app loads, draws and shows its data with no network. A price refresh
+  offline keeps every typed price and says so.
+* **Storage failures.** Storage switched off, a full quota, corrupt data with and without a
+  good backup: each shows a clear message, offers a download, and never throws or deletes.
+* **Migration.** A version 0 file upgrades with pounds turned to pence, and a saved layout
+  that still lists the old net worth chart drops that entry cleanly.
+* **One account only.** All seven charts render, none blank or errored, each with a title.
+* **Wording.** No em dashes, en dashes or hyphenated words in the interface.
+* **Wide screens.** At 1024px the chart sits beside the accounts and Insights uses two columns.
 
-### The one console note
+## Upgrading the copy already on your phone
 
-During the deliberate offline test, Chromium logs four `ERR_INTERNET_DISCONNECTED`
-lines of its own for the price requests. These come from the browser's network stack,
-not from the app, and no page can suppress them. The app caught every one and carried
-on. Outside that deliberate test the console is completely clean: on first load, through
-all thirteen steps, and after a reload.
+The version installed before this redesign had a service worker that fetched the page from
+the network but the scripts from its cache, so the first visit after an update could pair
+the new page with old scripts. That was rehearsed directly: the version that was live was
+served and installed with the demo data, the new release was put over the top, and the
+app opened again.
 
-## Known limitations, measured rather than assumed
+| Path | What happens | Result |
+| --- | --- | --- |
+| The phone still has the old page cached | The old version keeps running whole, never half updated, and the next cold start opens the redesign | **Pass,** all 127 entries intact, old cache gone |
+| The phone fetches the new page fresh | The mismatch is spotted, the app repairs itself with one reload and opens the redesign | **Pass,** all 127 entries intact, works offline straight after |
+| A later release | "A new version is ready", tap, and it switches to the new cache | **Pass,** data intact |
 
-### The palette cannot meet the 15 point rule everywhere
+The new service worker serves the page and its code from one cache per release, so this
+cannot happen again, and `tools/stamp-sw.mjs` plus a test make sure every release changes
+`sw.js` so installed copies notice it.
 
-This was asked for and it is worth being exact about. Measured lightness gaps:
+## Bugs found during the redesign
 
-* The five categories that physically touch in the stacked allocation bar: adjacent gaps
-  of 16.5, 11.2, 13.7 and 15.7 points. The smallest is **11.2**, not 15.
-* The nine asset accounts, walking down the scale: smallest gap between any two is
-  **4.5** points, with adjacent greyscale contrast ratios from 1.12 to 1.61.
+Found by testing and by looking at screenshots, and fixed:
 
-Nine series cannot all sit 15 points apart on an eleven stop single hue scale. The stops
-span about 89 lightness points, so 15 point spacing allows roughly six colours, not nine.
-There is also a direct conflict in the brief: "assign account colours by walking down the
-phthalo scale so that categories stay visually related" puts accounts in the same
-category on *neighbouring* shades, which is the opposite of separating them by 15 points.
+1. **Goal progress bars were invisible** on Home in both themes. The bar was an inline
+   element with no height. Labels showed, the bar did not.
+2. **A first visit reloaded itself** a second after opening, as the service worker took
+   charge, which also threw away the welcome message. This was in the first version too.
+3. **Editing a withdrawal checked the balance the wrong way round.** It added the original
+   entry back instead of removing it before checking for going below zero. Also present in
+   the first version.
+4. **The update prompt could miss an update** the browser had already found before the
+   page loaded. The new code checks for a waiting update as well as listening for one.
+5. **The debt badge and the cash badge were too alike** in dark mode: measured, the two
+   reds sat below the colour separation floor. The debt badge is now an outlined ring, so
+   it differs in kind as well as colour.
+6. **The lowest axis figure hid under the line,** and one axis mixed `£12k` with
+   `£8,000`. Labels now draw on top with a halo, and each axis uses one format.
+7. **The troubleshooting advice to clear site data** did not say that this also deletes
+   everything saved. It now says to export first.
 
-Categories staying visually related was treated as the assignment rule, since it was
-stated as such, and the shortfall is handled where it actually matters:
+## Measurements behind the colours
 
-* Every bar carries its name and value **directly on the chart**, so colour is never the
-  only way to tell two series apart.
-* Every filled shape has a hairline outline, so even the palest fill reads against a pale
-  background and the darkest reads against a dark one.
-* Bars are separated by whitespace. The only place segments touch is the allocation bar,
-  which has the widest spacing available and direct labels.
-* The debt keeps `--negative` exclusively and nothing else uses it.
+The palette is no longer limited to a single hue, which removes the shortfall recorded
+for the first version, where nine accounts could not sit 15 lightness points apart.
 
-### What is not covered
+* **Text.** Ink, muted, accent, positive, negative and warning text each reach at least
+  4.5 to 1 against the surface, canvas and raised fills in both themes. The lowest is
+  5.19 to 1, light mode negative text on the raised fill.
+* **Category colours.** From a documented, colour vision checked palette, with a separate
+  step per theme. The allocation bar keeps one fixed order, chosen by running all 120
+  arrangements through a validator: its closest neighbours measure an OKLab difference of
+  9.2 under simulated deuteranopia (8 is the target) and 19.3 with full colour vision (15
+  is the floor), in both themes. No set of five hues passes when any two may touch, so the
+  category colours appear only where their order is fixed.
+* **Light mode relief.** Three category colours sit below 3 to 1 against white. The
+  allocation chart carries every value in its legend and in its table view, which is the
+  required relief.
 
-1. **The live price endpoints were never reached.** Outbound access to
-   `api.coingecko.com`, `api.gold-api.com` and `api.frankfurter.app` is blocked in the
-   environment this was built in; all three returned a proxy 403. The failure path is
-   tested thoroughly, which is the part that matters for the app never breaking, and the
-   parsing of a good response is tested against a stubbed `fetch`. But the endpoint URLs
-   and response shapes have **not** been confirmed against the real services. Press
-   "Refresh prices now" once on your phone and check the result before relying on it.
-   If an endpoint has moved, only `src/prices.js` needs changing and nothing else can
-   break as a result.
-2. **No real device.** Everything was tested in desktop Chromium at a 375px viewport.
-   No real iPhone, iPad or Android handset was involved. Touch handling, the iOS home
-   screen install, and the Safari share sheet are unverified on hardware.
-3. **Chromium only.** Safari and Firefox were not tested at all. The app uses no exotic
-   features, but that is an expectation rather than a measurement.
-4. **iOS storage eviction is not observable here.** The warning about iOS clearing the
-   storage of sites not opened for a few weeks is based on documented Safari behaviour,
-   not on something reproduced in testing.
-5. **GitHub Pages was not deployed.** Subfolder serving was verified locally by serving
-   from the parent directory, which exercises the same relative path behaviour, but no
-   real Pages deployment was made and the service worker update prompt has therefore only
-   been tested locally.
-6. **Screen readers were not tested.** Landmarks, labels and focus order are in place and
-   colour contrast is measured, but no VoiceOver or TalkBack pass was done.
-7. **Very large ledgers were not profiled.** The daily series is rebuilt from the whole
-   transaction history on every draw. That is deliberate, because it is what makes
-   backdating correct, and it is instant with the 130 entry demo. It has not been timed
-   with tens of thousands of entries.
+## What is not covered
+
+1. **The live price services were never reached.** All three are still blocked from the
+   environment this was built in. The failure path is tested thoroughly and the parsing of
+   a good response is tested against a stubbed `fetch`, but the real services have not
+   answered. Press Refresh once on your phone before relying on it.
+2. **No real device.** Everything ran in Chromium at a phone sized viewport. Touch, the
+   home screen install, and the share sheet are unverified on hardware.
+3. **Chromium only.** Safari and Firefox were not tested. The upgrade rehearsal in
+   particular ran in Chromium; iOS manages service workers in installed apps its own way,
+   so the exact moment the redesign appears on an iPhone may differ, though no path
+   touches your saved data.
+4. **iOS storage eviction** is documented Safari behaviour, not something reproduced here.
+5. **Screen readers** were not tested, though labels, roles and table views are in place.
+6. **Very large ledgers** were not profiled. History is rebuilt from every entry on each
+   draw, which is instant with the demo data.
 
 ## Running the tests yourself
 
 ```sh
-node --test                      # 77 assertions, needs nothing installed
+node --test                      # 87 checks, nothing to install
 python3 -m http.server 8000      # then open http://localhost:8000/tests.html
 ```
 
-The browser smoke test is a development tool and is the one thing here that needs a
-dependency:
+The browser suite needs Playwright, which the app itself never does:
 
 ```sh
 npm install -g playwright
 node tools/browser-smoke.mjs
 ```
-
-It writes screenshots to `tools/screenshots/`. Note that the file is deliberately **not**
-called `smoke-test.mjs`: that name matches the pattern `node --test` uses to find test
-files, so the unit suite would try to launch a browser and would fail anywhere Playwright
-is not installed.

@@ -51,23 +51,21 @@ a static site.
 ### Deploying a change later
 
 ```sh
+node tools/stamp-sw.mjs
+node --test
 git add -A
 git commit -m "What changed"
 git push
 ```
 
-**One thing to remember every time.** Open `sw.js` and bump `CACHE_VERSION` before you
-push:
+**The first line matters every time.** An installed copy only notices a new release when
+`sw.js` itself changes. `tools/stamp-sw.mjs` sets `CACHE_VERSION` in `sw.js` from a hash of
+every file the app caches, so it changes exactly when they do. Forget it and `node --test`
+fails with a message telling you to run it, so a release cannot slip out under the old
+version and be served stale forever, which is the single most common way a PWA goes wrong.
 
-```js
-const CACHE_VERSION = 'v2';   // was v1
-```
-
-The service worker serves the cached copy first so the app works offline. If the version
-does not change, an installed copy can keep serving the old files indefinitely. Bumping
-it makes the app notice the new version, delete the old cache and offer you a
-"new version is ready" prompt rather than silently staying stale. This is the single
-most common thing that goes wrong with a PWA.
+Once pushed, an installed copy shows "A new version is ready" the next time it is opened
+or brought back on screen. Tapping Reload now switches over; your data is not affected.
 
 ## Part two: installing it on your phone
 
@@ -121,8 +119,9 @@ Moving to a new phone is export on the old one, install on the new one, import.
 ## If something goes wrong
 
 **The page is blank or the styling is missing.** Almost always a stale service worker.
-Bump `CACHE_VERSION` in `sw.js`, push, then in the browser clear the site data and
-reload.
+Run `node tools/stamp-sw.mjs`, push, then reload. If it persists, clear the site data in
+the browser settings, but export a backup first, because clearing site data also
+removes what you have saved.
 
 **Pages says 404.** Give it two or three minutes after the first push. Check the branch
 and folder are `main` and `/ (root)` in the Pages settings.
