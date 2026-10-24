@@ -413,20 +413,22 @@ await step(10, 'Reload the page and confirm nothing was lost', async () => {
 
 await step(11, 'Nothing overflows at 375px and every target is tappable', async () => {
   await page.setViewportSize({ width: 375, height: 812 });
+  // A sheet slides in over 200ms, and a box measured mid slide can read a
+  // hundred thousandth of a pixel short of its fixed 44px, hence 43.99.
   const sweep = (where) => page.evaluate((w) => {
     const bad = [];
     document.querySelectorAll('button, a.button, select, input, summary, [role="button"]').forEach((el) => {
       const box = el.getBoundingClientRect();
       if (!box.width && !box.height) return;
       if (el.closest('svg')) return;
-      if (box.height < 44 || box.width < 44) bad.push(`${w}: ${el.tagName.toLowerCase()}[${el.dataset.action || el.type || el.className}] ${Math.round(box.width)}x${Math.round(box.height)}`);
+      if (box.height < 43.99 || box.width < 43.99) bad.push(`${w}: ${el.tagName.toLowerCase()}[${el.dataset.action || el.type || el.className}] ${Math.round(box.width)}x${Math.round(box.height)}`);
     });
     return bad;
   }, where);
   const overflow = () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
 
   let small = [];
-  for (const view of ['home', 'insights', 'activity', 'settings']) {
+  for (const view of ['home', 'insights', 'plan', 'activity', 'settings']) {
     await tab(view);
     record(`no sideways scroll on ${view}`, await overflow());
     small = small.concat(await sweep(view));
@@ -439,6 +441,8 @@ await step(11, 'Nothing overflows at 375px and every target is tappable', async 
   await act('#view-account [data-action="account-tab"][data-tab="overview"]');
   await act('#view-account .quick-actions [data-action="new-tx"][data-dir="in"]');
   small = small.concat(await sweep('entry form'));
+  const modeFields = await page.locator('#sheet [data-mode-field]').evaluateAll((els) => els.filter((el) => el.offsetParent !== null).length);
+  record('a holding\'s entry form shows pounds or units, never both', modeFields === 1, `${modeFields} visible`);
   await act('#sheet [data-action="close-sheet"]');
   record('every control is at least 44 by 44', small.length === 0, small.slice(0, 10).join('\n'));
   await goHome();
@@ -697,6 +701,172 @@ await step('F', 'Every chart with exactly one account, and the interface wording
 });
 
 /* ---------------- 13. Console ---------------- */
+
+/* ---------------- G. The plan ---------------- */
+
+await step('G', 'The long term plan, against real accounts', async () => {
+  // A state like the owner's, saved by the release before the plan existed.
+  await page.goto(BASE, { waitUntil: 'networkidle' });
+  await page.evaluate(() => {
+    const acc = (id, name, type, category, extra = {}) => ({ id, name, type, category, order: 0, colourIndex: 0, archived: false, note: '', goal: null, ...extra });
+    let n = 0;
+    const tx = (accountId, date, direction, pounds) => ({ id: `p${n += 1}`, accountId, date, direction, amountPence: Math.round(pounds * 100), unitsE8: 0, unitPricePence: null, note: '', createdAt: `${date}T09:00:00.000Z` });
+    const accounts = [
+      acc('acc_bitcoin', 'Bitcoin', 'balance', 'Crypto'), acc('acc_gold', 'Gold', 'balance', 'Precious metals'),
+      acc('acc_silver', 'Silver', 'balance', 'Precious metals'), acc('acc_lisa', 'Lifetime ISA', 'balance', 'Property savings'),
+      acc('acc_ssisa', 'Stocks and Shares ISA', 'balance', 'Investments'), acc('acc_savings', 'Savings account', 'balance', 'Cash'),
+      acc('acc_current', 'Current account', 'balance', 'Cash'), acc('acc_debt', 'Debt', 'liability', 'Debt', { interestRatePct: 14 })
+    ].map((a, i) => ({ ...a, order: i, colourIndex: i }));
+    const t = [tx('acc_bitcoin', '2026-03-20', 'in', 680), tx('acc_gold', '2026-03-20', 'in', 300), tx('acc_silver', '2026-03-20', 'in', 100),
+      tx('acc_ssisa', '2026-03-20', 'in', 2100), tx('acc_savings', '2026-03-20', 'in', 1200), tx('acc_debt', '2026-03-20', 'in', 9031),
+      tx('acc_current', '2026-04-01', 'in', 640), tx('acc_lisa', '2026-04-05', 'in', 1500)];
+    localStorage.setItem('phthalo.finance.v1', JSON.stringify({ schemaVersion: 1, createdAt: '2026-03-20', updatedAt: '2026-04-05',
+      lastExportAt: '2026-04-05', settings: { theme: 'dark', netWorthRange: '1y', notices: { iosStorage: true, backupReminder: null } },
+      accounts, transactions: t }));
+  });
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('#view-home .account-card');
+  record('a version 1 save upgrades to version 2 with a note, and keeps every entry',
+    /version 1 to version 2/.test(await page.locator('#banners').innerText())
+      && (await state()).schemaVersion === 2 && (await state()).transactions.length === 8 && (await state()).plan === null);
+
+  await tab('plan');
+  record('with no plan, the Plan tab offers the house plan or a blank one',
+    (await page.locator('#view-plan [data-action="plan-create"]').count()) === 2);
+  await act('#view-plan [data-action="plan-create"][data-arg="house"]');
+  await pause(300);
+  const plan = (await state()).plan;
+  record('the house plan is created with its ten lines and the purchase',
+    plan && plan.lines.length === 10 && plan.purchase && plan.purchase.month === '2031-10');
+  record('its lines are linked to the matching accounts',
+    plan.lines.find((l) => l.id === 'lisa').accountIds.join() === 'acc_lisa' && plan.lines.find((l) => l.id === 'loan').accountIds.join() === 'acc_debt');
+  record('the chart draws the plan, your line and the forecast',
+    (await page.locator('#plan-chart path.line-plan').count()) === 1 && (await page.locator('#plan-chart path.line-forecast').count()) === 1);
+  record('the chart has its table of numbers', (await page.locator('#plan-chart-card .table-view tbody tr').count()) === 10);
+
+  // The screen says what the engine says.
+  const engine = await page.evaluate(async () => {
+    const P = await import('./src/plan.js');
+    const s = window.phthalo.app.state;
+    const status = P.planStatus(s.plan, s, window.phthalo.todayISO());
+    return { status: status.today.status, diff: status.today.differencePence, purchase: status.milestones.find((m) => m.key === 'purchase') };
+  });
+  const chipText = await page.locator('#view-plan .card').first().locator('.status').innerText();
+  const expected = { ahead: 'Ahead of plan', behind: 'Behind plan', 'on plan': 'On plan' }[engine.status];
+  record('the status chip matches the engine', chipText.trim() === expected, `${chipText.trim()} (${engine.status}, ${engine.diff})`);
+  const milestoneText = await page.locator('#view-plan .list-row.is-static').allInnerTexts();
+  record('the purchase milestone shows its own month', milestoneText.some((t) => /House bought/.test(t) && /October 2031/.test(t)), milestoneText.join(' | ').replace(/\n/g, ' '));
+  const alert = await page.locator('#view-plan .plan-alert').allInnerTexts();
+  record('the purchase card warns that the buying costs are not covered in cash', alert.some((t) => /£7,100/.test(t)), alert.join(' '));
+
+  // Money in a linked account moves the comparison straight away.
+  const before = engine.diff;
+  await addEntry('acc_lisa', '600');
+  await goHome();
+  await tab('plan');
+  const after = await page.evaluate(async () => {
+    const P = await import('./src/plan.js');
+    const s = window.phthalo.app.state;
+    return P.planStatus(s.plan, s, window.phthalo.todayISO()).today.differencePence;
+  });
+  record('adding £600 to the Lifetime ISA moves the comparison by exactly £600', after - before === 60000, `${before} then ${after}`);
+  await tab('home');
+  record('Home carries a plan card that opens the Plan tab', (await page.locator('#view-home .plan-card').count()) === 1);
+  await act('#view-home .plan-card');
+  record('and it does', await page.locator('#view-plan').isVisible());
+
+  // Change a monthly amount: saved at once, and back to its line.
+  await act('#view-plan [data-action="plan-line"][data-arg="lisa"]');
+  await act('#sheet [data-action="plan-phase"][data-phase="max"]');
+  record('a month box only shows when the condition is a month',
+    await page.locator('#sheet [data-month-for="startMonth"]').isVisible() && !(await page.locator('#sheet [data-month-for="endMonth"]').isVisible()));
+  await page.selectOption('#phase-end', 'month');
+  await page.fill('#phase-end-month', '2027-01');
+  await act('form[data-form="plan-phase"] button[type="submit"]');
+  record('a last month before the first is refused', /before the first/.test(await page.locator('#sheet [data-error="endMonth"]').innerText()));
+  await page.selectOption('#phase-end', 'purchase');
+  await page.fill('#phase-amount', '250');
+  await act('form[data-form="plan-phase"] button[type="submit"]');
+  const max = (await state()).plan.lines.find((l) => l.id === 'lisa').phases.find((p) => p.id === 'max');
+  record('the new amount is saved as exact pence', max.amountPence === 25000 && max.end.type === 'purchase', JSON.stringify(max));
+  record('and the sheet goes back to the line', await page.locator('#sheet form[data-form="plan-line"]').isVisible());
+  await act('#sheet [data-action="close-sheet"]');
+
+  // Add a line, give it an amount, then delete it.
+  await act('#view-plan [data-action="plan-line"]:not([data-arg])');
+  await page.fill('#line-name', 'Holiday fund');
+  await page.fill('#line-start', '100');
+  await page.fill('#line-growth', 'lots');
+  await act('form[data-form="plan-line"] button[type="submit"]');
+  record('a growth rate that is not a number is refused', /number/.test(await page.locator('#sheet [data-error="growth"]').innerText()));
+  await page.fill('#line-growth', '2');
+  await act('form[data-form="plan-line"] button[type="submit"]');
+  const added = (await state()).plan.lines.find((l) => l.name === 'Holiday fund');
+  record('the line is added', Boolean(added) && added.startPence === 10000 && added.growthPct === 2);
+  record('a new pot opens again, ready for its monthly amounts', await page.locator('#sheet [data-action="plan-phase"]').isVisible());
+  await act('#sheet [data-action="plan-phase"]');
+  await page.fill('#phase-amount', '25');
+  await act('form[data-form="plan-phase"] button[type="submit"]');
+  record('and takes one', (await state()).plan.lines.find((l) => l.name === 'Holiday fund').phases.length === 1);
+  await act('#sheet [data-action="plan-line-delete"]');
+  await confirm();
+  record('a line can be deleted', !(await state()).plan.lines.some((l) => l.name === 'Holiday fund'));
+
+  // The purchase editor refuses a nonsense price.
+  await act('#view-plan [data-action="plan-purchase"]');
+  await page.fill('#buy-price', '0');
+  await act('form[data-form="plan-purchase"] button[type="submit"]');
+  record('a house price of zero is refused', /price/.test(await page.locator('#sheet [data-error="price"]').innerText()));
+  await page.fill('#buy-price', '175000');
+  await act('form[data-form="plan-purchase"] button[type="submit"]');
+  record('a changed price is saved', (await state()).plan.purchase.pricePence === 17500000);
+
+  // Size, overflow and wording, on the plan and every one of its sheets.
+  const sweep = (where) => page.evaluate((w) => {
+    const bad = [];
+    document.querySelectorAll('#view-plan button, #view-plan select, #view-plan input, #view-plan summary, #sheet button, #sheet select, #sheet input').forEach((el) => {
+      const box = el.getBoundingClientRect();
+      if ((!box.width && !box.height) || el.closest('svg')) return;
+      if (box.height < 43.99 || box.width < 43.99) bad.push(`${w}: ${el.tagName.toLowerCase()}[${el.dataset.action || el.name || el.type}] ${Math.round(box.width)}x${Math.round(box.height)}`);
+    });
+    return bad;
+  }, where);
+  const words = () => page.evaluate(() => {
+    const seen = new Set();
+    document.querySelectorAll('#view-plan, #sheet').forEach((root) => root.querySelectorAll('*').forEach((el) => el.childNodes.forEach((n) => {
+      if (n.nodeType === 3 && n.textContent.trim()) seen.add(n.textContent.trim());
+    })));
+    document.querySelectorAll('#view-plan option, #sheet option, #view-plan [aria-label]').forEach((el) => seen.add(el.textContent.trim() || el.getAttribute('aria-label')));
+    return [...seen];
+  });
+  let small = await sweep('plan');
+  let prose = await words();
+  record('no sideways scroll on the plan', await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1));
+  for (const [open, name] of [['#view-plan [data-action="plan-line"][data-arg="savings"]', 'line'], ['#view-plan [data-action="plan-purchase"]', 'purchase'], ['#view-plan [data-action="plan-settings"]', 'settings']]) {
+    await act(open);
+    small = small.concat(await sweep(name));
+    prose = prose.concat(await words());
+    if (name === 'line') {
+      await act('#sheet [data-action="plan-phase"][data-phase="build"]');
+      small = small.concat(await sweep('amount'));
+      prose = prose.concat(await words());
+    }
+    await act('#sheet [data-action="close-sheet"]');
+  }
+  record('every control on the plan and its forms is at least 44 by 44', small.length === 0, small.slice(0, 8).join('\n'));
+  record('no em or en dashes on the plan', !prose.some((t) => /[–—]/.test(t)));
+  const hyphenated = prose.filter((t) => /[A-Za-z]{2,}-[A-Za-z]{2,}/.test(t));
+  record('no hyphenated words on the plan', hyphenated.length === 0, hyphenated.join(' | '));
+  await page.screenshot({ path: path.join(SHOTS, 'G-plan.png'), fullPage: true });
+
+  await tab('plan');
+  await act('#view-plan [data-action="plan-delete"]');
+  await confirm();
+  record('the plan can be deleted, and the accounts are untouched',
+    (await state()).plan === null && (await state()).transactions.length === 9
+      && (await page.locator('#view-plan [data-action="plan-create"]').count()) === 2);
+  await tab('home');
+});
 
 await step(13, 'The browser console is clean throughout', async () => {
   // Chromium logs its own line for a request that fails while offline.

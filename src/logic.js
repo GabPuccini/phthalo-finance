@@ -15,7 +15,7 @@
 /* Constants                                                           */
 /* ------------------------------------------------------------------ */
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const STORAGE_KEY = 'phthalo.finance.v1';
 export const BACKUP_KEY = 'phthalo.finance.v1.backup';
 export const UNIT_SCALE = 100000000; // 1e8
@@ -1140,12 +1140,144 @@ export function validateImport(candidate) {
     }
   });
 
+  for (const problem of planProblems(candidate.plan)) fail(problem);
+
   if (errors.length > 8) {
     const shown = errors.slice(0, 8);
     shown.push(`and ${errors.length - 8} more problems.`);
     return { ok: false, errors: shown };
   }
   return { ok: errors.length === 0, errors };
+}
+
+/* ------------------------------------------------------------------ */
+/* The plan's shape                                                    */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The long term plan is worked out in plan.js. Its shape lives here, beside
+ * the rest of the saved state, so that loading, importing and cleaning a
+ * file never needs the engine, and plan.js can build on this module
+ * without the two importing each other.
+ */
+
+export function isValidMonth(key) {
+  return typeof key === 'string' && /^\d{4}-(0[1-9]|1[0-2])$/.test(key);
+}
+
+const planInt = (v, fallback = 0) => (v !== null && v !== '' && Number.isFinite(Number(v)) ? Math.round(Number(v)) : fallback);
+const planNum = (v, fallback = 0) => (v !== null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : fallback);
+const planStr = (v, fallback = '') => (typeof v === 'string' ? v : fallback);
+const planIds = (list, keep) => (Array.isArray(list)
+  ? [...new Set(list.filter((id) => typeof id === 'string' && id && keep(id)))]
+  : []);
+
+function cleanCondition(cond, lineIds) {
+  if (!cond || typeof cond !== 'object') return null;
+  if (cond.type === 'month' && isValidMonth(cond.month)) return { type: 'month', month: cond.month };
+  if (cond.type === 'cleared' && lineIds.has(cond.line)) return { type: 'cleared', line: cond.line };
+  if (cond.type === 'purchase') return { type: 'purchase' };
+  return null;
+}
+
+/**
+ * Bring a plan to its canonical shape: fields in a fixed order, numbers
+ * that are numbers, and no reference to a line that does not exist, so a
+ * plan can never point at nothing. Pass the ids of the accounts that exist
+ * and links to deleted accounts are dropped too. Returns null for anything
+ * that is not a plan at all.
+ */
+export function normalisePlan(plan, accountIds = null) {
+  if (!plan || typeof plan !== 'object' || !Array.isArray(plan.lines)) return null;
+  const keepAccount = accountIds ? (id) => accountIds.has(id) : () => true;
+  const seen = new Set();
+  const rawLines = plan.lines.filter((l) => {
+    if (!l || typeof l !== 'object' || typeof l.id !== 'string' || !l.id) return false;
+    if (l.id === 'house' || l.id === 'mortgage' || seen.has(l.id)) return false;
+    seen.add(l.id);
+    return true;
+  });
+  const lineIds = new Set(rawLines.map((l) => l.id));
+  const lines = rawLines.map((l) => {
+    const kind = l.kind === 'debt' ? 'debt' : 'asset';
+    return {
+      id: l.id,
+      name: planStr(l.name).trim() || 'Untitled',
+      kind,
+      accountIds: planIds(l.accountIds, keepAccount),
+      startPence: planInt(l.startPence),
+      growthPct: planNum(l.growthPct),
+      lisa: kind === 'asset' && Boolean(l.lisa),
+      aprPct: Math.max(0, planNum(l.aprPct)),
+      paymentPence: Math.max(0, planInt(l.paymentPence)),
+      redirectTo: lineIds.has(l.redirectTo) && l.redirectTo !== l.id ? l.redirectTo : null,
+      phases: (Array.isArray(l.phases) ? l.phases : [])
+        .filter((p) => p && typeof p === 'object')
+        .map((p, i) => ({
+          id: planStr(p.id) || `phase_${i + 1}`,
+          amountPence: Math.max(0, planInt(p.amountPence)),
+          capPence: p.capPence === null || p.capPence === undefined || p.capPence === ''
+            || !Number.isFinite(Number(p.capPence)) ? null : Math.max(0, planInt(p.capPence)),
+          start: cleanCondition(p.start, lineIds),
+          end: cleanCondition(p.end, lineIds)
+        }))
+    };
+  });
+
+  let purchase = null;
+  const p = plan.purchase;
+  if (p && typeof p === 'object' && isValidMonth(p.month)) {
+    const assetLine = (id) => lineIds.has(id) && lines.find((l) => l.id === id).kind === 'asset';
+    const lisaLine = assetLine(p.lisaLine) ? p.lisaLine : null;
+    const depositLines = planIds(p.depositLines, (id) => assetLine(id) && id !== lisaLine);
+    purchase = {
+      month: p.month,
+      pricePence: Math.max(0, planInt(p.pricePence)),
+      minDepositPct: Math.min(100, Math.max(0, planNum(p.minDepositPct, 10))),
+      costsPence: Math.max(0, planInt(p.costsPence)),
+      mortgageRatePct: Math.max(0, planNum(p.mortgageRatePct, 5)),
+      mortgageYears: Math.min(40, Math.max(1, planInt(p.mortgageYears, 30))),
+      overpaymentPence: Math.max(0, planInt(p.overpaymentPence)),
+      houseGrowthPct: planNum(p.houseGrowthPct),
+      lisaLine,
+      depositLines,
+      leftoverTo: assetLine(p.leftoverTo) && p.leftoverTo !== lisaLine && !depositLines.includes(p.leftoverTo)
+        ? p.leftoverTo : null,
+      houseAccountIds: planIds(p.houseAccountIds, keepAccount),
+      mortgageAccountIds: planIds(p.mortgageAccountIds, keepAccount)
+    };
+  }
+
+  return {
+    name: planStr(plan.name).trim() || 'My plan',
+    startMonth: isValidMonth(plan.startMonth) ? plan.startMonth : '2026-04',
+    years: Math.min(40, Math.max(1, planInt(plan.years, 10))),
+    lines,
+    purchase,
+    notes: planStr(plan.notes)
+  };
+}
+
+/** Problems that would stop a saved plan being imported, in plain words. */
+export function planProblems(plan) {
+  if (plan === null || plan === undefined) return [];
+  if (typeof plan !== 'object' || Array.isArray(plan)) return ['The plan is not an object.'];
+  const problems = [];
+  if (!Array.isArray(plan.lines)) problems.push('The plan has no list of lines.');
+  if (plan.startMonth !== undefined && !isValidMonth(plan.startMonth)) {
+    problems.push(`The plan start "${plan.startMonth}" is not a month.`);
+  }
+  (Array.isArray(plan.lines) ? plan.lines : []).forEach((line, i) => {
+    if (!line || typeof line !== 'object' || typeof line.id !== 'string' || !line.id) {
+      problems.push(`Plan line ${i + 1} has no id.`);
+    } else if (line.startPence !== undefined && !Number.isFinite(line.startPence)) {
+      problems.push(`Plan line "${line.name || line.id}" has a starting balance that is not a number.`);
+    }
+  });
+  if (plan.purchase && (typeof plan.purchase !== 'object' || !isValidMonth(plan.purchase.month))) {
+    problems.push('The house purchase has no valid month.');
+  }
+  return problems;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1191,7 +1323,8 @@ export function emptyState(todayISO) {
     },
     accounts: [],
     transactions: [],
-    visuals: DEFAULT_VISUALS.map((v, i) => ({ ...v, order: i }))
+    visuals: DEFAULT_VISUALS.map((v, i) => ({ ...v, order: i })),
+    plan: null
   };
 }
 
@@ -1222,6 +1355,7 @@ export function normaliseState(state, todayISO) {
 
   out.accounts = out.accounts.map((account, i) => canonicalAccount(account, i));
   out.transactions = out.transactions.map((tx) => canonicalTransaction(tx));
+  out.plan = normalisePlan(state.plan, new Set(out.accounts.map((a) => a.id)));
 
   return out;
 }
@@ -1366,6 +1500,15 @@ const MIGRATIONS = {
       transactions,
       visuals: Array.isArray(old.visuals) ? old.visuals : undefined
     };
+  },
+
+  /*
+   * Version 2 adds the long term plan. Nothing existing changes. A plan is
+   * kept if one is already there, because a tab still running the previous
+   * release carries the plan through and saves it under version 1.
+   */
+  1: function migrateOneToTwo(old) {
+    return { ...old, schemaVersion: 2, plan: old.plan === undefined ? null : old.plan };
   }
 };
 

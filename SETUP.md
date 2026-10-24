@@ -108,13 +108,38 @@ visit.
 
 Everything lives in that one browser, so a backup is worth taking.
 
-* **Data tab, Export to JSON.** One file holding everything. Keep it somewhere that is
-  not the phone.
-* **Data tab, Import from JSON.** Reads a backup and replaces what is in the app. Bad
+* **Settings, Export to JSON.** One file holding everything, the plan included. Keep it
+  somewhere that is not the phone.
+* **Settings, Import from JSON.** Reads a backup and replaces what is in the app. Bad
   files are refused outright with a reason, never half loaded.
-* **Data tab, Export to CSV.** Every transaction as a spreadsheet, for Excel or Numbers.
+* **Settings, Export to CSV.** Every transaction as a spreadsheet, for Excel or Numbers.
 
 Moving to a new phone is export on the old one, install on the new one, import.
+
+On an iPhone the copy on the home screen keeps its own storage, separate from Safari. If
+you entered your data in Safari first, export it there and import it into the installed
+app once.
+
+## Setting up the plan
+
+Open the Plan tab and choose **Set up the house plan**. It builds the ten year plan to a
+house in October 2031 and links each line to the matching account: the Lifetime ISA, the
+Stocks and Shares ISA, the savings account, gold, silver, every crypto account and the
+debt. Lines with no account yet, such as the house deposit pot or the pension, follow the
+plan's own figures until you add an account and tick it on the line.
+
+A few things make the comparison fair:
+
+* **Record the loan as it really stands.** A debt account only moves with what you
+  record, so either add each month's interest to it or set it to the figure on the
+  lender's statement. Recording only the payments makes the loan look smaller than it is.
+* **Link an account only once it has entries.** A linked account with nothing recorded is
+  left out of the comparison rather than read as empty.
+* **The forecast starts next month.** It assumes this month's amounts are already in, so
+  pay in, record it, and the forecast moves straight away.
+
+The first time the new release opens it upgrades your saved data to version 2 and says
+so in a note. Nothing existing changes; the plan is added beside it.
 
 ## If something goes wrong
 

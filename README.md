@@ -58,7 +58,8 @@ phthalo-finance/
 
   src/
     logic.js            every calculation and every colour, pure, no DOM
-    app.js              the screens, calls logic.js for every number
+    plan.js             the long term plan, worked out month by month, pure
+    app.js              the screens, calls logic.js and plan.js for every number
     charts.js           the charts, hand written inline SVG
     icons.js            the category badges and interface icons
     storage.js          localStorage, backups, export and import
@@ -97,7 +98,8 @@ Two rules keep the numbers honest:
   what stops the off by one day bug that timezone conversion causes.
 
 The saved object carries a `schemaVersion`. When an older version is loaded it is
-upgraded by a migration function rather than being thrown away.
+upgraded by a migration function rather than being thrown away. Version 2 added the
+long term plan, saved as `plan` in the same object, so it travels with every backup.
 
 Net worth history is rebuilt by walking the whole transaction list in date order every
 time it is drawn. It is never stored as a running snapshot. That is why editing or
@@ -123,8 +125,41 @@ files are plain JSON and importing one restores everything exactly.
   change or delete it. Below the goal sit the account's own history, its unit price if it
   has one, when a debt clears, and the controls to reorder, archive or delete it.
 * **Insights.** The analysis charts, which you can switch on and off and reorder.
+* **Plan.** A long term plan, worked out month by month and checked against your real
+  accounts. See the next section.
 * **Activity.** Every entry across every account, newest first.
 * **Settings.** Backups, the theme, prices, and the demo data.
+
+## The plan
+
+The Plan tab holds one long term plan. A plan is a list of lines, one per pot of money
+or debt, each with its balance at the start, a growth rate or an interest rate, and the
+amounts that go in each month. An amount can start and stop on a month, when a debt is
+paid off, or at the house purchase, and can stop filling a pot at a set balance. Money a
+line cannot take, because it is full, closed or over the Lifetime ISA limit, moves on to
+the line it names, and a debt's payment does the same once it is cleared.
+
+The engine in `src/plan.js` runs every month in the same order: growth, then debt
+interest and payments, then the monthly amounts, then the purchase. A Lifetime ISA takes
+at most £4,000 a tax year, counted from April, with the 25% bonus added as the money
+goes in. At the purchase all of the Lifetime ISA goes toward the price, because that is
+the only thing it can be spent on. The deposit pots top the deposit up to the lender's
+minimum and pay the buying costs, and whatever they cannot cover comes out of the line
+named for what is left over, going below zero if it has to, so the net worth stays
+honest.
+
+Each line can be linked to one or more accounts. The screen then shows:
+
+* whether your linked accounts are ahead of, behind or on the plan today;
+* a chart of the plan, where you have actually been, and a forecast that runs the same
+  rules from next month starting from your real balances;
+* each milestone, such as a loan paid off or a pot filled, with its planned month and
+  the month the forecast now gives it;
+* the purchase as it now stands, with a warning when the cash will not cover it;
+* every line at the end of any plan year, against the forecast.
+
+Set up the house plan builds the ten year plan to a house in October 2031, linked to the
+default accounts. Every figure in it can be changed on the tab.
 
 ## How it looks, and why
 
@@ -175,8 +210,9 @@ code from one cache per release, so a phone can never pair a new page with old s
    totals converted at a rate you set, would cover savings held abroad.
 2. **Recurring entries.** A monthly transfer that posts itself, so regular saving does not
    need typing in every month.
-3. **A what if slider on each goal.** Drag a monthly amount and watch the arrival date
-   move, rather than working backwards from the required rate.
+3. **Plan scenarios.** Keep two versions of the plan side by side, for example the
+   Lifetime ISA at its maximum against more cash for the buying costs, and compare them
+   on one chart.
 4. **Encrypted backups.** A passphrase on the export file, so a backup can sit in cloud
    storage without the contents being readable.
 5. **A yearly review.** Money in, money out, growth and the biggest movers for a chosen

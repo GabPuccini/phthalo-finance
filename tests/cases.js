@@ -12,6 +12,7 @@
  */
 
 import * as L from '../src/logic.js';
+import * as P from '../src/plan.js';
 
 /** Set by whichever runner is in charge before the cases run. */
 let assert;
@@ -1358,4 +1359,333 @@ test('which symbol to look up is worked out from the account', async () => {
     { kind: 'crypto', id: 'cardano' });
   assert.equal(prices.symbolFor({ id: 'x', name: 'Premium Bonds', type: 'balance' }), null);
   assert.equal(prices.symbolFor(null), null);
+});
+
+/* ------------------------------------------------------------------ */
+/* The long term plan                                                  */
+/* ------------------------------------------------------------------ */
+
+/** A plan from April 2026, one year long unless told otherwise. */
+function plan(lines, extra = {}) {
+  return L.normalisePlan({ name: 'Test', startMonth: '2026-04', years: 1, lines, ...extra });
+}
+
+const at = (run, month, key) => P.pointAt(run, month).values[key];
+
+test('months and tax years count the way the plan needs', () => {
+  assert.equal(P.monthFromIndex(P.monthIndex('2026-04')), '2026-04');
+  assert.equal(P.monthIndex('2027-01') - P.monthIndex('2026-12'), 1);
+  assert.equal(P.monthFromIndex(P.monthIndex('2031-10') + 3), '2032-01');
+  assert.equal(P.taxYearOf(P.monthIndex('2027-03')), 2026);
+  assert.equal(P.taxYearOf(P.monthIndex('2027-04')), 2027);
+  assert.equal(L.isValidMonth('2026-13'), false);
+  assert.equal(L.isValidMonth('2026-1'), false);
+  assert.equal(L.isValidMonth('2026-12'), true);
+});
+
+test('a mortgage payment matches the standard repayment formula', () => {
+  // £153,000 at 5% over 30 years is £821.34 a month.
+  assert.equal(P.mortgagePayment(15300000, 5, 30), 82134);
+  assert.equal(P.mortgagePayment(1200000, 0, 1), 100000);
+  assert.equal(P.mortgagePayment(0, 5, 30), 0);
+});
+
+test('a loan in the plan clears on the same payment count as the payoff projection', () => {
+  for (const payment of [18800, 24700]) {
+    const p = plan([{ id: 'loan', name: 'Loan', kind: 'debt', startPence: 903100, aprPct: 14, paymentPence: payment }], { years: 10 });
+    const run = P.simulatePlan(p);
+    const payments = run.clearedAt.loan - P.monthIndex('2026-04') + 1;
+    assert.equal(payments, L.projectPayoff(903100, payment, 14, '2026-04-01').months);
+  }
+  // At the real £188 the last payment falls in February 2032, not March 2030.
+  const real = P.simulatePlan(plan([{ id: 'loan', name: 'Loan', kind: 'debt', startPence: 903100, aprPct: 14, paymentPence: 18800 }], { years: 10 }));
+  assert.equal(P.monthFromIndex(real.clearedAt.loan), '2032-02');
+});
+
+test('a Lifetime ISA adds the 25 percent bonus on what goes in', () => {
+  const run = P.simulatePlan(plan([
+    { id: 'lisa', name: 'LISA', kind: 'asset', lisa: true, growthPct: 5, phases: [{ id: 'a', amountPence: 20000 }] }
+  ]));
+  assert.equal(run.lisaBonusPence, 60000);
+  const end = at(run, '2027-04', 'lisa');
+  // £2,400 in, £600 bonus, and a little growth on a balance that builds over the year.
+  assert.ok(end > 300000 && end < 310000, `got ${end}`);
+});
+
+test('a Lifetime ISA takes £4,000 a tax year, sends the rest on, and opens again in April', () => {
+  const p = plan([
+    { id: 'lisa', name: 'LISA', kind: 'asset', lisa: true, redirectTo: 'cash', phases: [{ id: 'a', amountPence: 50000 }] },
+    { id: 'cash', name: 'Cash', kind: 'asset', phases: [] }
+  ], { years: 2 });
+  const run = P.simulatePlan(p);
+  assert.equal(run.lisaUsed['lisa:2026'], 400000);
+  assert.equal(at(run, '2027-04', 'lisa'), 500000);
+  assert.equal(at(run, '2027-04', 'cash'), 200000);
+  // April 2027 is a new tax year, so the first £500 goes back into the ISA.
+  assert.equal(at(run, '2027-05', 'lisa'), 562500);
+  assert.equal(at(run, '2027-05', 'cash'), 200000);
+});
+
+test('a full pot sends the overflow on and notes the month it filled', () => {
+  const run = P.simulatePlan(plan([
+    { id: 'savings', name: 'Savings', kind: 'asset', startPence: 30000, redirectTo: 'pot', phases: [{ id: 'a', amountPence: 10000, capPence: 45000 }] },
+    { id: 'pot', name: 'Pot', kind: 'asset', phases: [] }
+  ]));
+  assert.equal(at(run, '2026-07', 'savings'), 45000);
+  assert.equal(at(run, '2026-07', 'pot'), 15000);
+  assert.deepEqual(run.capHits, [{ lineId: 'savings', capPence: 45000, index: P.monthIndex('2026-05') }]);
+});
+
+test('a cleared debt passes its payment on, and phases can start when it clears', () => {
+  const run = P.simulatePlan(plan([
+    { id: 'loan', name: 'Loan', kind: 'debt', startPence: 25000, paymentPence: 10000, redirectTo: 'pot' },
+    { id: 'pot', name: 'Pot', kind: 'asset', phases: [] },
+    { id: 'isa', name: 'ISA', kind: 'asset', phases: [{ id: 'a', amountPence: 1000, start: { type: 'cleared', line: 'loan' } }] }
+  ]));
+  assert.equal(P.monthFromIndex(run.clearedAt.loan), '2026-06');
+  // June pays the last £50 and passes the other £50 on, then £100 a month after.
+  assert.equal(at(run, '2026-07', 'pot'), 5000);
+  assert.equal(at(run, '2026-08', 'pot'), 15000);
+  assert.equal(at(run, '2026-07', 'isa'), 0);
+  assert.equal(at(run, '2026-08', 'isa'), 1000);
+});
+
+function purchasePlan(lisa, pot, savings) {
+  return plan([
+    { id: 'lisa', name: 'LISA', kind: 'asset', lisa: true, startPence: lisa, phases: [{ id: 'a', amountPence: 10000, end: { type: 'purchase' } }] },
+    { id: 'pot', name: 'Pot', kind: 'asset', startPence: pot, phases: [] },
+    { id: 'savings', name: 'Savings', kind: 'asset', startPence: savings, phases: [] }
+  ], {
+    years: 2,
+    purchase: {
+      month: '2026-04', pricePence: 15000000, minDepositPct: 10, costsPence: 500000,
+      mortgageRatePct: 5, mortgageYears: 25, overpaymentPence: 0, houseGrowthPct: 0,
+      lisaLine: 'lisa', depositLines: ['pot'], leftoverTo: 'savings'
+    }
+  });
+}
+
+test('at purchase the Lifetime ISA goes to the price and the pot pays the costs', () => {
+  const run = P.simulatePlan(purchasePlan(1990000, 1000000, 300000));
+  const bought = run.purchase;
+  // £19,900 plus this month's £100 and its £25 bonus: £20,025, all toward the price.
+  assert.equal(bought.lisaPence, 2002500);
+  assert.equal(bought.topUpPence, 0);
+  assert.equal(bought.mortgagePence, 15000000 - 2002500);
+  assert.equal(bought.monthlyPaymentPence, P.mortgagePayment(15000000 - 2002500, 5, 25));
+  assert.equal(bought.costsShortPence, 0);
+  assert.equal(bought.leftoverPence, 500000);
+  assert.equal(at(run, '2026-05', 'savings'), 800000);
+  assert.equal(at(run, '2026-05', 'pot'), 0);
+  // The ISA closes, so its phase stops and nothing more goes in.
+  assert.equal(at(run, '2027-04', 'lisa'), 0);
+});
+
+test('buying costs the pot cannot cover come out of savings, and net worth falls by exactly the costs', () => {
+  const run = P.simulatePlan(purchasePlan(1990000, 100000, 300000));
+  const bought = run.purchase;
+  assert.equal(bought.fromSavingsPence, 300000);
+  assert.equal(bought.costsShortPence, 100000);
+  assert.equal(at(run, '2026-05', 'savings'), -100000);
+  const before = run.points[0].netWorthPence + 10000 + 2500;   // plus the month's ISA payment and bonus
+  assert.equal(run.points[1].netWorthPence, before - 500000);
+});
+
+test('a small Lifetime ISA is topped up to the minimum deposit from the pot first', () => {
+  const run = P.simulatePlan(purchasePlan(487500, 1200000, 300000));
+  const bought = run.purchase;
+  assert.equal(bought.lisaPence, 500000);
+  assert.equal(bought.topUpPence, 1000000);
+  assert.equal(bought.depositPence, 1500000);
+  assert.equal(bought.depositShortPence, 0);
+  assert.equal(bought.fromSavingsPence, 300000);
+  assert.equal(bought.costsShortPence, 0);
+});
+
+test('the house plan reproduces the agreed figures, with the loan on its real schedule', async () => {
+  const seed = await import('../src/seed.js');
+  const p = P.housePlan(seed.defaultAccounts());
+  const run = P.simulatePlan(p);
+  assert.equal(run.points[0].netWorthPence, -465100);
+  const year1 = P.yearlyCheckpoints(p, run)[0];
+  assert.equal(year1.month, '2027-04');
+  assert.equal(year1.values.savings, 240000);
+  // £2,100 at 5% a year, compounded monthly and rounded to the penny each month.
+  assert.ok(Math.abs(year1.values.ssisa - 220500) <= 1, `got ${year1.values.ssisa}`);
+  const when = Object.fromEntries(P.planMilestones(p, run).map((m) => [m.key, m.index === null ? null : P.monthFromIndex(m.index)]));
+  assert.equal(when['cleared:loan'], '2032-02');
+  assert.equal(when.purchase, '2031-10');
+  assert.equal(when['full:savings:450000'], '2030-02');
+  assert.equal(when.deposit, null);
+  // The Lifetime ISA can only go toward the price, so the cash pots fall short of the costs.
+  assert.ok(run.purchase.costsShortPence > 0);
+  assert.equal(run.purchase.lisaPence + run.purchase.mortgagePence, 17000000);
+  assert.equal(run.unallocatedPence, 0);
+  // It links to the default accounts.
+  assert.deepEqual(p.lines.find((l) => l.id === 'lisa').accountIds, ['acc_lisa']);
+  assert.deepEqual(p.lines.find((l) => l.id === 'crypto').accountIds, ['acc_bitcoin', 'acc_ethereum', 'acc_solana']);
+});
+
+function crypto680(date = '2026-03-01') {
+  return makeState([account('acc_btc', 'Bitcoin', 'balance', 'Crypto')], [tx('acc_btc', date, 'in', 680)]);
+}
+
+test('a forecast from balances exactly on plan reproduces the plan, before and after each event', () => {
+  const state = crypto680();
+  const p = P.housePlan(state.accounts);
+  for (const today of ['2026-04-10', '2026-10-24', '2029-06-10', '2031-10-15', '2031-12-05', '2032-05-01', '2036-02-20']) {
+    const status = P.planStatus(p, state, today);
+    assert.equal(status.today.status, 'on plan', today);
+    assert.ok(status.forecast, today);
+    for (const point of status.forecast.points) {
+      const planned = P.pointAt(status.baseline, point.month);
+      assert.deepEqual(point.values, planned.values, `${today}, ${point.month}`);
+    }
+    const marks = Object.fromEntries(status.milestones.map((m) => [m.key, m]));
+    assert.equal(marks.purchase.forecastIndex, marks.purchase.planIndex, today);
+    assert.equal(marks['cleared:loan'].forecastIndex, marks['cleared:loan'].planIndex, today);
+  }
+});
+
+function cashPlan() {
+  return plan([{ id: 'cash', name: 'Cash', kind: 'asset', accountIds: ['acc_cash'], startPence: 100000, phases: [{ id: 'a', amountPence: 10000 }] }], { years: 10 });
+}
+
+test('ahead, behind or on plan compares linked accounts with the plan on the day', () => {
+  const p = cashPlan();
+  const make = (pounds) => makeState([account('acc_cash', 'Cash', 'balance', 'Cash')], [tx('acc_cash', '2026-04-01', 'in', pounds)]);
+  // On 15 October the plan has £1,600 plus 14 days of the month's £100: £1,647.
+  const ahead = P.planStatus(p, make(2000), '2026-10-15');
+  assert.equal(ahead.today.planPence, 164667);
+  assert.equal(ahead.today.status, 'ahead');
+  assert.equal(ahead.today.differencePence, 200000 - 164667);
+  assert.equal(P.planStatus(p, make(1500), '2026-10-15').today.status, 'behind');
+  assert.equal(P.planStatus(p, make(1640), '2026-10-15').today.status, 'on plan');
+  assert.equal(P.planStatus(p, make(2000), '2026-03-15').today.status, 'not started');
+  // The forecast starts next month from the real £2,000 and keeps the same rules.
+  const end = (run) => run.points[run.points.length - 1].values.cash;
+  assert.equal(end(ahead.forecast) - end(ahead.baseline), 200000 - 170000);
+});
+
+test('a linked account with nothing recorded is not read as a loan paid off', () => {
+  const p = plan([{ id: 'loan', name: 'Loan', kind: 'debt', accountIds: ['acc_debt'], startPence: 500000, paymentPence: 10000 }], { years: 5 });
+  const state = makeState([account('acc_debt', 'Debt', 'liability', 'Debt'), account('acc_cur', 'Current account', 'balance', 'Cash')],
+    [tx('acc_cur', '2026-05-01', 'in', 250)]);
+  const status = P.planStatus(p, state, '2026-10-15');
+  assert.equal(status.today.status, 'not linked');
+  assert.deepEqual(status.unrecorded, ['loan']);
+  assert.deepEqual(status.unlinked, []);
+  // The forecast runs the loan on its schedule instead of calling it paid.
+  assert.equal(status.forecast.clearedAt.loan, status.baseline.clearedAt.loan);
+  assert.ok(status.forecast.points[0].values.loan > 0);
+  // Money the plan does not follow is listed rather than ignored.
+  assert.deepEqual(status.outside.map((a) => a.id), ['acc_cur']);
+});
+
+test('a debt recorded at zero is cleared in the forecast, and its payment moves on next month', () => {
+  const p = plan([
+    { id: 'loan', name: 'Loan', kind: 'debt', accountIds: ['acc_debt'], startPence: 500000, paymentPence: 10000, redirectTo: 'pot' },
+    { id: 'pot', name: 'Pot', kind: 'asset', phases: [] }
+  ], { years: 5 });
+  const state = makeState([account('acc_debt', 'Debt', 'liability', 'Debt')],
+    [tx('acc_debt', '2026-04-01', 'in', 5000), tx('acc_debt', '2026-09-01', 'out', 5000)]);
+  const status = P.planStatus(p, state, '2026-10-15');
+  assert.equal(status.forecast.clearedAt.loan, P.monthIndex('2026-10'));
+  assert.equal(at(status.forecast, '2026-12', 'pot'), 10000);
+  const loan = status.milestones.find((m) => m.key === 'cleared:loan');
+  assert.equal(loan.done, true);
+  assert.ok(loan.forecastIndex < loan.planIndex);
+});
+
+test('the forecast knows how much Lifetime ISA allowance the plan has already used this tax year', () => {
+  const p = plan([
+    { id: 'lisa', name: 'LISA', kind: 'asset', lisa: true, accountIds: ['acc_lisa'], redirectTo: 'cash', phases: [{ id: 'a', amountPence: 50000 }] },
+    { id: 'cash', name: 'Cash', kind: 'asset', phases: [] }
+  ], { years: 2 });
+  const state = makeState([account('acc_lisa', 'Lifetime ISA', 'balance', 'Property savings')], [tx('acc_lisa', '2026-04-01', 'in', 5000)]);
+  const status = P.planStatus(p, state, '2027-01-10');
+  // April to January is ten months of £500, so the £4,000 is used up.
+  assert.equal(status.forecast.lisaUsed['lisa:2026'], 400000);
+  assert.equal(at(status.forecast, '2027-04', 'lisa'), 500000);
+  assert.equal(at(status.forecast, '2027-05', 'lisa'), 562500);
+});
+
+test('the chart lines join up: your line ends where the forecast begins', () => {
+  const p = cashPlan();
+  const state = makeState([account('acc_cash', 'Cash', 'balance', 'Cash')], [tx('acc_cash', '2026-04-01', 'in', 1000), tx('acc_cash', '2026-08-03', 'in', 400)]);
+  const series = P.planSeries(p, state, '2026-10-15');
+  assert.equal(series.planned[0].date, '2026-04-01');
+  assert.equal(series.planned.length, 121);
+  assert.equal(series.you[0].date, '2026-04-01');
+  assert.equal(series.you[0].valuePence, 100000);
+  assert.equal(series.you[series.you.length - 1].date, '2026-10-15');
+  assert.equal(series.you[series.you.length - 1].valuePence, 140000);
+  assert.deepEqual(series.forecast[0], series.you[series.you.length - 1]);
+  assert.equal(series.forecast[1].date, '2026-11-01');
+  // Dates only ever go forwards.
+  for (const line of [series.planned, series.you, series.forecast]) {
+    for (let i = 1; i < line.length; i += 1) assert.ok(line[i].date > line[i - 1].date);
+  }
+});
+
+test('cleaning a plan is idempotent and leaves nothing pointing at nothing', async () => {
+  const seed = await import('../src/seed.js');
+  const p = P.housePlan(seed.defaultAccounts());
+  assert.deepEqual(L.normalisePlan(JSON.parse(JSON.stringify(p))), p);
+  const messy = L.normalisePlan({
+    startMonth: 'soon',
+    years: '3',
+    lines: [
+      { id: 'a', name: '  ', kind: 'asset', startPence: '1500', redirectTo: 'gone', accountIds: ['acc_1', 'acc_gone', 7],
+        phases: [{ amountPence: -5, capPence: '', start: { type: 'cleared', line: 'gone' }, end: { type: 'month', month: '2027-02' } }] },
+      { id: 'a', name: 'Duplicate' },
+      { id: 'house', name: 'Reserved' },
+      null
+    ],
+    purchase: { month: '2030-01', lisaLine: 'gone', depositLines: ['a', 'gone'], leftoverTo: 'a' }
+  }, new Set(['acc_1']));
+  assert.equal(messy.startMonth, '2026-04');
+  assert.equal(messy.years, 3);
+  assert.equal(messy.lines.length, 1);
+  const line = messy.lines[0];
+  assert.equal(line.name, 'Untitled');
+  assert.equal(line.startPence, 1500);
+  assert.equal(line.redirectTo, null);
+  assert.deepEqual(line.accountIds, ['acc_1']);
+  assert.deepEqual(line.phases[0], { id: 'phase_1', amountPence: 0, capPence: null, start: null, end: { type: 'month', month: '2027-02' } });
+  assert.equal(messy.purchase.lisaLine, null);
+  assert.deepEqual(messy.purchase.depositLines, ['a']);
+  assert.equal(messy.purchase.leftoverTo, null);
+  assert.equal(L.normalisePlan('nonsense'), null);
+  assert.equal(L.normalisePlan({ lines: 'no' }), null);
+});
+
+test('a version 1 save gains an empty plan, and keeps one a newer tab already wrote', () => {
+  const v1 = { schemaVersion: 1, accounts: [account('acc_x', 'X', 'balance', 'Cash')], transactions: [], settings: {} };
+  const { state, migratedFrom } = L.migrate(JSON.parse(JSON.stringify(v1)), TODAY);
+  assert.equal(migratedFrom, 1);
+  assert.equal(state.schemaVersion, 2);
+  assert.equal(state.plan, null);
+  assert.equal(state.accounts[0].name, 'X');
+  const carried = L.migrate({ ...v1, plan: cashPlan() }, TODAY).state;
+  assert.deepEqual(carried.plan, L.normalisePlan(cashPlan(), new Set(['acc_x'])));
+});
+
+test('a plan survives export and import byte for byte, and a broken one is refused', () => {
+  const state = makeState([account('acc_cash', 'Cash', 'balance', 'Cash')], [tx('acc_cash', '2026-04-01', 'in', 1000)]);
+  state.plan = cashPlan();
+  const json = JSON.stringify(state);
+  assert.equal(L.validateImport(JSON.parse(json)).ok, true);
+  assert.equal(JSON.stringify(L.normaliseState(JSON.parse(json), TODAY)), json);
+  const broken = L.validateImport({ ...JSON.parse(json), plan: { lines: [{ name: 'No id' }], startMonth: 'May' } });
+  assert.equal(broken.ok, false);
+  assert.ok(broken.errors.some((e) => /not a month/.test(e)));
+  assert.ok(broken.errors.some((e) => /has no id/.test(e)));
+});
+
+test('deleting an account drops it from the plan rather than leaving a dangling link', () => {
+  const state = makeState([account('acc_cash', 'Cash', 'balance', 'Cash')], []);
+  state.plan = cashPlan();
+  state.accounts = [];
+  assert.deepEqual(L.normaliseState(state, TODAY).plan.lines[0].accountIds, []);
 });

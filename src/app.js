@@ -5,8 +5,10 @@
  * in logic.js; nothing is calculated here.
  *
  * Screens: Home (net worth and the accounts), Insights (the charts),
- * Activity (every entry), Settings, and the account screen, which opens
- * over the others with its own back button, as a native app would.
+ * Plan (the long term plan against your real accounts, worked out in
+ * plan.js), Activity (every entry), Settings, and the account screen,
+ * which opens over the others with its own back button, as a native app
+ * would.
  */
 
 import {
@@ -21,11 +23,14 @@ import {
   dateToISO,
   describeTimeRemaining,
   formatMoney,
+  formatMoneyCompact,
   formatUnits,
   goalProgress,
   highestBalance,
   isValidISODate,
+  isValidMonth,
   netWorthAt,
+  normalisePlan,
   parseMoneyToPence,
   parseUnitsToE8,
   projectPayoff,
@@ -41,11 +46,15 @@ import {
   heroBlock,
   lineChart,
   longDate,
+  monthLabel,
+  planChart,
+  planTable,
   renderVisual,
   shortDate,
   statusChip
 } from './charts.js';
-import { icon } from './icons.js';
+import { categoryGlyph, icon } from './icons.js';
+import * as P from './plan.js';
 import { demoState, emptyStateWithDefaults } from './seed.js';
 import * as store from './storage.js';
 import { fetchPrices, describeResult } from './prices.js';
@@ -91,7 +100,7 @@ window.addEventListener('unhandledrejection', (event) => {
 /* Application state                                                   */
 /* ------------------------------------------------------------------ */
 
-const TAB_VIEWS = ['home', 'insights', 'activity', 'settings'];
+const TAB_VIEWS = ['home', 'insights', 'plan', 'activity', 'settings'];
 
 const app = {
   state: null,
@@ -105,7 +114,8 @@ const app = {
   saveBlocked: false,
   lastWidth: 0,
   pendingConfirm: null,
-  sheetOpen: false
+  sheetOpen: false,
+  planYear: null
 };
 
 const todayISO = () => dateToISO(new Date());
@@ -338,6 +348,7 @@ function render() {
 
     if (app.view === 'home') renderHome();
     else if (app.view === 'insights') renderInsights();
+    else if (app.view === 'plan') renderPlan();
     else if (app.view === 'activity') renderActivity();
     else if (app.view === 'settings') renderSettings();
     else if (app.view === 'account') renderAccount();
@@ -410,6 +421,7 @@ function renderHome() {
     <div class="home-layout">
       <div id="hero-slot"></div>
       <div>
+        ${planCardSafely(today)}
         <div class="section-head">
           <h2 class="section-title">Assets</h2>
           <span class="section-total">${esc(formatMoney(totals.assetsPence))}</span>
@@ -610,6 +622,367 @@ function renderSettings() {
         is the only way back, so export one now and then.
         ${app.state.accounts.length} accounts and ${app.state.transactions.length} entries are stored here.</p>
     </div>`;
+}
+
+/* ---------------- Plan ---------------- */
+
+const monthText = (index) => monthLabel(P.monthFromIndex(index));
+const pounds = (pence) => formatMoney(pence, { showPence: false });
+
+/** "3 months", "1 year", "2 years and 5 months". */
+function spanText(months) {
+  const years = Math.floor(months / 12);
+  const rest = months % 12;
+  const part = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  if (!years) return part(rest, 'month');
+  return rest ? `${part(years, 'year')} and ${part(rest, 'month')}` : part(years, 'year');
+}
+
+const PLAN_CHIPS = {
+  ahead: ['is-good', 'trendUp', 'Ahead of plan'],
+  behind: ['is-bad', 'alert', 'Behind plan'],
+  'on plan': ['is-info', 'check', 'On plan'],
+  'not started': ['', 'clock', 'Not started'],
+  'not linked': ['is-warn', 'info', 'Nothing to compare yet']
+};
+
+/** A status always carries an icon and words, never colour alone. */
+function chip([tone, glyph, text]) {
+  return `<span class="status ${tone}">${icon[glyph]}${esc(text)}</span>`;
+}
+
+function planSentence(status) {
+  const t = status.today;
+  if (t.status === 'not started') return `The plan starts in ${monthText(status.baseline.startIndex)}. Until then there is nothing to compare.`;
+  if (t.status === 'not linked') return 'Link a line to one of your accounts, and record something in it, to compare the plan with your real money.';
+  const plan = `the ${pounds(t.planPence)} the plan has for these lines today`;
+  if (t.status === 'ahead') return `${pounds(t.differencePence)} more than ${plan}.`;
+  if (t.status === 'behind') return `${pounds(-t.differencePence)} less than ${plan}.`;
+  return `Within ${pounds(t.tolerancePence)} of ${plan}.`;
+}
+
+/** What a milestone row says, worked out from its planned and forecast months. */
+function milestoneWords(m, compare) {
+  if (m.done) return { chip: ['is-good', 'check', 'Done'], sub: m.planIndex === null ? 'Not in the plan' : `Planned for ${monthText(m.planIndex)}` };
+  if (!compare) {
+    return m.planIndex === null
+      ? { chip: ['is-warn', 'alert', 'Not reached'], sub: 'Not reached within the plan' }
+      : { chip: ['', 'clock', 'Planned'], sub: monthText(m.planIndex) };
+  }
+  if (m.planIndex === null && m.forecastIndex === null) return { chip: ['is-warn', 'alert', 'Not reached'], sub: 'Not reached within the plan' };
+  if (m.planIndex === null) return { chip: ['is-good', 'trendUp', 'Now in reach'], sub: `Not in the plan, now on course for ${monthText(m.forecastIndex)}` };
+  if (m.forecastIndex === null) return { chip: ['is-bad', 'alert', 'Off course'], sub: `Planned for ${monthText(m.planIndex)}, not reached on current figures` };
+  const diff = m.forecastIndex - m.planIndex;
+  if (diff === 0) return { chip: ['is-info', 'check', 'On course'], sub: monthText(m.planIndex) };
+  if (diff < 0) return { chip: ['is-good', 'trendUp', `${spanText(-diff)} early`], sub: `${monthText(m.forecastIndex)}, planned for ${monthText(m.planIndex)}` };
+  return { chip: ['is-bad', 'alert', `${spanText(diff)} late`], sub: `${monthText(m.forecastIndex)}, planned for ${monthText(m.planIndex)}` };
+}
+
+function lineName(plan, id) {
+  const line = plan.lines.find((l) => l.id === id);
+  return line ? line.name : 'nowhere';
+}
+
+/** The purchase, as the forecast now has it, or as planned. */
+function purchaseCard(plan, status, compare) {
+  const forecastBuy = compare && status.forecast ? status.forecast.purchase : null;
+  const bought = forecastBuy || status.baseline.purchase;
+  const purchase = plan.purchase;
+  if (!bought) {
+    return `<article class="card">
+      <h2 class="card-title">The house</h2>
+      <p class="muted" style="margin-top:8px;font-size:14.5px">${esc(`The purchase is set for ${monthLabel(purchase.month)}, which is outside the plan's ${plan.years} years.`)}</p>
+    </article>`;
+  }
+  const pots = purchase.depositLines.map((id) => lineName(plan, id)).join(' and ') || 'no deposit pot';
+  const savings = bought.leftoverTo ? lineName(plan, bought.leftoverTo) : null;
+  const notes = [];
+  if (bought.costsShortPence > 0 || bought.fromSavingsPence > 0) {
+    let text = `The buying costs need ${pounds(bought.costsPence)} in cash, and a Lifetime ISA can only go toward the price. `
+      + `The ${pots} holds ${pounds(Math.max(0, bought.cashPence))}`;
+    if (bought.fromSavingsPence > 0) text += `, so ${pounds(bought.fromSavingsPence)} comes out of ${savings}`;
+    if (bought.costsShortPence > 0) text += `${bought.fromSavingsPence > 0 ? ' and' : ', so'} ${pounds(bought.costsShortPence)} is not covered by any pot${savings ? `, which leaves ${savings} below zero` : ''}`;
+    notes.push(`${text}.`);
+  }
+  if (bought.depositShortPence > 0) {
+    notes.push(`The deposit is ${pounds(bought.depositShortPence)} short of the ${purchase.minDepositPct}% a lender asks for.`);
+  }
+  const leftover = bought.leftoverPence > 0 && savings
+    ? `<p class="chart-note">${esc(`${pounds(bought.leftoverPence)} left in the ${pots} moves to ${savings}.`)}</p>` : '';
+  const split = [];
+  if (bought.lisaPence > 0) split.push(`${pounds(bought.lisaPence)} from the Lifetime ISA`);
+  if (bought.topUpPence > 0) split.push(`${pounds(bought.topUpPence)} from the ${pots}`);
+  const facts = [
+    ['Price', pounds(bought.pricePence)],
+    ['Deposit', `${pounds(bought.depositPence)}, ${Math.round(bought.depositPct)}%`],
+    ['Mortgage', `${pounds(bought.mortgagePence)}, ${Math.round(bought.loanToValuePct)}%`],
+    ['Each month', `${pounds(bought.monthlyPaymentPence)}${bought.overpaymentPence ? ` plus ${pounds(bought.overpaymentPence)} extra` : ''}`],
+    ['Buying costs', pounds(bought.costsPence)],
+    ['Interest rate', `${purchase.mortgageRatePct}% over ${purchase.mortgageYears} years`]
+  ];
+  return `<article class="card">
+    <div class="card-head"><div>
+      <h2 class="card-title">${esc(`The house, ${monthText(bought.index)}`)}</h2>
+      <p class="card-subtitle">${forecastBuy ? 'On current figures' : 'As planned'}</p>
+    </div></div>
+    <dl class="info-grid">${facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join('')}</dl>
+    ${split.length ? `<p class="chart-note">${esc(`The deposit is ${split.join(' and ')}.`)}</p>` : ''}
+    ${notes.map((n) => `<div class="plan-alert">${icon.alert}<p>${esc(n)}</p></div>`).join('')}
+    ${leftover}
+  </article>`;
+}
+
+/** Real balances on a past date for the keys that are linked, in the plan's terms. */
+function actualOn(plan, dateISO) {
+  return P.linkedActuals(plan, app.state, dateISO);
+}
+
+function yearCard(plan, status, today) {
+  const rows = P.yearlyCheckpoints(plan, status.baseline);
+  if (!rows.length) return '';
+  const nowMonth = today.slice(0, 7);
+  const current = rows.find((r) => r.month > nowMonth) || rows[rows.length - 1];
+  const chosen = rows.find((r) => r.year === app.planYear) || current;
+  const forecastPoint = status.forecast ? P.pointAt(status.forecast, chosen.month) : null;
+  const past = !forecastPoint && chosen.month <= nowMonth;
+  const actual = past ? actualOn(plan, `${chosen.month}-01`) : null;
+  const keys = P.planKeys(plan);
+  const debt = (key) => key === 'mortgage' || (plan.lines.find((l) => l.id === key) || {}).kind === 'debt';
+  const signed = (key, v) => (debt(key) ? -Math.max(0, v) : v);
+  const other = (key) => {
+    if (forecastPoint) return signed(key, forecastPoint.values[key] || 0);
+    if (actual && actual[key] !== null) return signed(key, actual[key]);
+    return null;
+  };
+  const shown = keys.filter((key) => (chosen.values[key] || 0) !== 0 || (other(key) || 0) !== 0);
+  const otherHead = forecastPoint ? 'Forecast' : (past ? 'You' : '');
+  const totalOther = forecastPoint ? forecastPoint.netWorthPence : null;
+  return `<article class="card">
+    <h2 class="card-title">Year by year</h2>
+    <div class="field" style="margin:12px 0 4px">
+      <label for="plan-year">At the end of</label>
+      <select class="select" id="plan-year" data-change="plan-year">
+        ${rows.map((r) => `<option value="${r.year}"${r.year === chosen.year ? ' selected' : ''}>${esc(`Year ${r.year}, ${monthText(r.index - 1)}`)}</option>`).join('')}
+      </select>
+    </div>
+    <table class="data-table">
+      <caption class="visually-hidden">${esc(`Every line at the end of year ${chosen.year}`)}</caption>
+      <thead><tr><th scope="col">Line</th><th scope="col">Plan</th>${otherHead ? `<th scope="col">${otherHead}</th>` : ''}</tr></thead>
+      <tbody>
+        ${shown.map((key) => `<tr><td>${esc(P.keyName(plan, key))}</td><td>${esc(pounds(signed(key, chosen.values[key] || 0)))}</td>${otherHead ? `<td>${esc(other(key) === null ? 'Not linked' : pounds(other(key)))}</td>` : ''}</tr>`).join('')}
+        <tr class="is-total"><td>Net worth</td><td>${esc(pounds(chosen.netWorthPence))}</td>${otherHead ? `<td>${esc(totalOther === null ? '' : pounds(totalOther))}</td>` : ''}</tr>
+      </tbody>
+    </table>
+    ${past ? '<p class="chart-note">For a year that has ended, the right hand column is the real balance of each linked account.</p>' : ''}
+  </article>`;
+}
+
+function lineSummary(line) {
+  const parts = [];
+  if (line.kind === 'debt') {
+    parts.push(`${pounds(line.startPence)} at ${line.aprPct}% APR`, `${pounds(line.paymentPence)} a month`);
+  } else {
+    parts.push(`${pounds(line.startPence)} at the start`);
+    if (line.growthPct) parts.push(`${line.growthPct}% a year`);
+    if (line.lisa) parts.push('Lifetime ISA');
+    const n = line.phases.length;
+    parts.push(n ? `${n} monthly amount${n === 1 ? '' : 's'}` : 'No monthly amounts');
+  }
+  parts.push(line.accountIds.length ? 'Linked' : 'Not linked');
+  return parts.join(' · ');
+}
+
+function lineGlyph(line) {
+  if (line.kind === 'debt') return categoryGlyph('debt');
+  if (line.lisa) return categoryGlyph('property');
+  return categoryGlyph(line.growthPct ? 'investments' : 'cash');
+}
+
+function emptyPlan() {
+  return `
+    <div class="empty" style="margin-top:8px">
+      <p class="empty-title">Plan the years ahead</p>
+      <p class="empty-body">Set out what goes into each pot every month, when a loan clears and when you buy a house.
+        The app works it through month by month and checks your accounts against it.</p>
+      <div class="plan-start">
+        <button type="button" class="button is-primary" data-action="plan-create" data-arg="house">Set up the house plan</button>
+        <button type="button" class="button" data-action="plan-create" data-arg="blank">Start a blank plan</button>
+      </div>
+      <p class="field-hint" style="margin-top:14px">The house plan is the ten year plan to buy in October 2031,
+        linked to your accounts. Every figure in it can be changed.</p>
+    </div>`;
+}
+
+function renderPlan() {
+  const host = byId('view-plan');
+  const plan = app.state.plan;
+  if (!plan) { host.innerHTML = emptyPlan(); return; }
+  try {
+    drawPlan(host, plan);
+  } catch (error) {
+    // A plan that cannot be worked out should never cost the rest of the app.
+    host.innerHTML = `
+      <p class="chart-error" style="margin-top:8px">${esc(`The plan could not be worked out (${error.message}). Your accounts and entries are safe.`)}</p>
+      <button type="button" class="button is-block is-quiet-danger" data-action="plan-delete" style="margin-top:12px">${icon.trash}Delete the plan</button>`;
+  }
+}
+
+function drawPlan(host, plan) {
+  const today = todayISO();
+  const status = P.planStatus(plan, app.state, today);
+  const series = P.planSeries(plan, app.state, today, status);
+  const t = status.today;
+  const compare = t.status !== 'not started' && t.status !== 'not linked';
+  const startIndex = P.monthIndex(plan.startMonth);
+  const endIndex = startIndex + (plan.years * 12);
+  const baselineEnd = status.baseline.points[status.baseline.points.length - 1].netWorthPence;
+  const forecastEnd = compare && status.forecast ? status.forecast.points[status.forecast.points.length - 1].netWorthPence : null;
+
+  let title;
+  if (forecastEnd === null) title = `The plan reaches ${formatMoneyCompact(baselineEnd)} by ${monthText(endIndex)}`;
+  else {
+    const gap = forecastEnd - baselineEnd;
+    const near = Math.max(50000, Math.round(Math.abs(baselineEnd) * 0.01));
+    if (Math.abs(gap) <= near) title = `On course for ${formatMoneyCompact(forecastEnd)} by ${monthText(endIndex)}`;
+    else title = `Heading for ${formatMoneyCompact(forecastEnd)} by ${monthText(endIndex)}, ${formatMoneyCompact(Math.abs(gap))} ${gap > 0 ? 'above' : 'below'} the plan`;
+  }
+
+  // The chart's table twin: each plan year end, against where you are or are heading.
+  const yours = new Map([...series.you, ...series.forecast].filter((p) => p.date.endsWith('-01')).map((p) => [p.date.slice(0, 7), p.valuePence]));
+  const tableRows = P.yearlyCheckpoints(plan, status.baseline).map((r) => ({
+    month: P.monthFromIndex(r.index - 1),
+    planPence: r.netWorthPence,
+    forecastPence: compare && yours.has(r.month) ? yours.get(r.month) : null
+  }));
+
+  const linkedRows = status.perLine.filter((r) => r.actualPence !== null);
+  // Lines the plan has nothing in yet, such as the house before it is bought, need no mention.
+  const notCompared = status.perLine.filter((r) => r.actualPence === null && (r.linked || r.planPence !== 0))
+    .map((r) => `${r.name} (${r.linked ? 'nothing recorded yet' : 'not linked'})`);
+  const signed = (r, v) => (r.debt ? -Math.max(0, v) : v);
+  const todayCard = status.nowIndex >= startIndex ? `
+    <article class="card">
+      <h2 class="card-title">Today, line by line</h2>
+      ${linkedRows.length ? `<table class="data-table" style="margin-top:10px">
+        <caption class="visually-hidden">Each linked line today against the plan</caption>
+        <thead><tr><th scope="col">Line</th><th scope="col">You</th><th scope="col">Plan</th></tr></thead>
+        <tbody>${linkedRows.map((r) => `<tr><td>${esc(r.name)}</td><td>${esc(pounds(signed(r, r.actualPence)))}</td><td>${esc(pounds(signed(r, r.planPence)))}</td></tr>`).join('')}</tbody>
+      </table>` : ''}
+      ${notCompared.length ? `<p class="chart-note">${esc(`Not compared: ${notCompared.join(', ')}. The forecast uses the plan's own figures for these.`)}</p>` : ''}
+      ${status.outside.length ? `<p class="chart-note">${esc(`Not in the plan: ${status.outside.map((a) => `${a.name} ${pounds(a.debt ? -a.valuePence : a.valuePence)}`).join(', ')}.`)}</p>` : ''}
+    </article>` : '';
+
+  const milestones = status.milestones.map((m) => {
+    const words = milestoneWords(m, compare);
+    return `<div class="list-row no-lead is-static">
+      <span class="row-main"><span class="row-title">${esc(m.title)}</span><span class="row-sub">${esc(words.sub)}</span></span>
+      <span class="row-end">${chip(words.chip)}</span>
+    </div>`;
+  }).join('');
+
+  host.innerHTML = `
+    <div class="plan-layout">
+      <div class="plan-main">
+        <article class="card">
+          <div class="card-head">
+            <div><h2 class="card-title">${esc(plan.name)}</h2>
+              <p class="card-subtitle">${esc(`${monthText(startIndex)} to ${monthText(endIndex)}`)}</p></div>
+            ${chip(PLAN_CHIPS[t.status])}
+          </div>
+          ${compare ? `<p class="stat-label">Linked accounts today</p>
+            <p class="stat-big">${esc(formatMoney(t.actualPence))}</p>
+            <p class="muted" style="font-size:14.5px;margin-top:4px">${esc(planSentence(status))}</p>`
+    : `<p class="muted" style="font-size:14.5px">${esc(planSentence(status))}</p>`}
+        </article>
+
+        <article class="card" id="plan-chart-card">
+          <div class="card-head"><div>
+            <h2 class="card-title">${esc(title)}</h2>
+            <p class="card-subtitle">Net worth, counting the house at its value less the mortgage</p>
+          </div></div>
+          ${plan.lines.length ? `<p class="hero-readout" data-readout data-default="Touch the chart to read any month" style="margin-top:0">Touch the chart to read any month</p>
+          <div data-scrub id="plan-chart"></div>
+          ${planTable(tableRows)}` : '<div class="chart-empty"><p class="chart-empty-title">Nothing in the plan yet</p><p class="chart-empty-hint">Add a line below for each pot of money or debt.</p></div>'}
+        </article>
+
+        ${status.milestones.length ? `<article class="card">
+          <h2 class="card-title">Milestones</h2>
+          <div class="list-group is-inset" style="margin-top:8px">${milestones}</div>
+        </article>` : ''}
+
+        ${plan.purchase ? purchaseCard(plan, status, compare) : ''}
+      </div>
+      <div class="plan-side">
+        ${todayCard}
+        ${plan.lines.length ? yearCard(plan, status, today) : ''}
+
+        <div class="section-head"><h2 class="section-title">Assumptions</h2></div>
+        <div class="list-group is-wrapping">
+          ${settingsRow({ action: 'plan-settings', glyph: icon.edit, title: 'Name, start and length', sub: `${monthText(startIndex)}, ${plan.years} years` })}
+          ${plan.lines.map((line) => settingsRow({ action: 'plan-line', arg: line.id, glyph: lineGlyph(line), title: line.name, sub: lineSummary(line) })).join('')}
+          ${settingsRow({ action: 'plan-line', glyph: icon.plus, title: 'Add a line', sub: 'A pot of money or a debt' })}
+          ${settingsRow({ action: 'plan-purchase', glyph: categoryGlyph('property'), title: plan.purchase ? 'House purchase' : 'Add a house purchase',
+    sub: plan.purchase ? `${monthLabel(plan.purchase.month)}, ${pounds(plan.purchase.pricePence)}` : 'A deposit, a mortgage and the buying costs' })}
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <p class="info-card-title">How the plan is worked out</p>
+          ${plan.notes ? `<p style="font-size:14.5px;margin-bottom:10px">${esc(plan.notes)}</p>` : ''}
+          <ul class="plan-notes">
+            <li>Each month runs in the same order: growth, then debt payments, then the monthly amounts, then the purchase.</li>
+            <li>A Lifetime ISA takes up to £4,000 a tax year, counted from April, and the 25% bonus is added as money goes in. Anything over the limit moves on to the line it sends money to.</li>
+            <li>At the purchase all of the Lifetime ISA goes toward the price. The buying costs come from the deposit pots, then from the line named for what is left over.</li>
+            <li>The forecast starts next month from today's balance of each linked account, and uses the plan's own figures for anything not linked.</li>
+            <li>A debt account only moves with what you record. Add each month's interest to it, or set it to the lender's statement, so it compares fairly with the plan.</li>
+          </ul>
+        </div>
+        <button type="button" class="button is-block is-quiet-danger" data-action="plan-delete" style="margin-top:12px">${icon.trash}Delete the plan</button>
+      </div>
+    </div>`;
+
+  const chartHost = byId('plan-chart');
+  if (chartHost) {
+    chartHost.innerHTML = planChart({
+      planned: series.planned,
+      you: compare ? series.you : [],
+      forecast: compare ? series.forecast : [],
+      today,
+      width: contentWidth(chartHost),
+      label: `${plan.name}: net worth in the plan${compare ? ', where you have been, and the forecast from today' : ''}`
+    });
+    attachScrub(chartHost, byId('plan-chart-card').querySelector('[data-readout]'));
+  }
+}
+
+/** The small plan card on Home: where you stand and what comes next. */
+function homePlanCard(today) {
+  const plan = app.state.plan;
+  if (!plan) return '';
+  const status = P.planStatus(plan, app.state, today);
+  const t = status.today;
+  const compare = t.status !== 'not started' && t.status !== 'not linked';
+  const next = status.milestones.find((m) => !m.done && (compare ? m.forecastIndex : m.planIndex) !== null);
+  const when = next ? (compare ? next.forecastIndex : next.planIndex) : null;
+  let line;
+  if (t.status === 'ahead') line = `${pounds(t.differencePence)} ahead of the plan today`;
+  else if (t.status === 'behind') line = `${pounds(-t.differencePence)} behind the plan today`;
+  else if (t.status === 'on plan') line = 'Level with the plan today';
+  else line = planSentence(status);
+  return `
+    <button type="button" class="plan-card" data-action="go" data-view="plan">
+      <span class="plan-card-head"><span class="plan-card-name">${esc(plan.name)}</span>${chip(PLAN_CHIPS[t.status])}</span>
+      <span class="plan-card-line">${esc(line)}</span>
+      ${next ? `<span class="plan-card-next">${esc(`Next: ${next.title}, ${monthText(when)}`)}</span>` : ''}
+    </button>`;
+}
+
+/** The Home card must never take Home down with it. */
+function planCardSafely(today) {
+  try {
+    return homePlanCard(today);
+  } catch (error) {
+    return `<p class="chart-error" style="margin-top:6px">${esc(`The plan could not be worked out (${error.message}). Open the Plan tab to change or delete it.`)}</p>`;
+  }
 }
 
 /* ---------------- Account screen ---------------- */
@@ -827,7 +1200,7 @@ function attachScrub(container, readout) {
 
   const show = (i) => {
     index = Math.max(0, Math.min(points.length - 1, i));
-    const [x, y, date, value] = points[index];
+    const [x, y, date, value, suffix] = points[index];
     line.setAttribute('x1', x);
     line.setAttribute('x2', x);
     dot.setAttribute('cx', x);
@@ -836,7 +1209,7 @@ function attachScrub(container, readout) {
     readout.textContent = '';
     const strong = document.createElement('strong');
     strong.textContent = formatMoney(value);
-    readout.append(strong, document.createTextNode(` on ${longDate(date)}`));
+    readout.append(strong, document.createTextNode(suffix || ` on ${longDate(date)}`));
   };
   const nearest = (clientX) => {
     const box = svg.getBoundingClientRect();
@@ -1441,6 +1814,456 @@ function handleGoalSubmit(form) {
   render();
 }
 
+/* ---------------- Plan editors ---------------- */
+
+/*
+ * Every editor works on a copy of the plan and saves it through
+ * normalisePlan, so a deleted line or account can never leave the plan
+ * pointing at nothing. Monthly amounts are edited in a sheet of their own
+ * and saved as soon as they are, so a line's form never holds unsaved work
+ * underneath another sheet.
+ */
+
+const penceText = (pence) => (pence / 100).toFixed(2);
+
+function checkList(name, options, chosen) {
+  if (!options.length) return '<p class="field-hint">Nothing to choose from yet.</p>';
+  return `<div class="check-list">${options.map((o) => `
+    <label class="check-row"><input type="checkbox" class="check" name="${esc(name)}" value="${esc(o.value)}"${chosen.includes(o.value) ? ' checked' : ''}>
+      <span><span class="check-title">${esc(o.label)}</span>${o.sub ? `<span class="check-sub">${esc(o.sub)}</span>` : ''}</span></label>`).join('')}</div>`;
+}
+
+function accountOptions() {
+  return activeAccounts(app.state).map((a) => ({ value: a.id, label: a.name, sub: a.category }));
+}
+
+function planSettingsForm() {
+  const plan = app.state.plan;
+  openSheet('Name, start and length', `
+    <form data-form="plan-settings" novalidate>
+      <div class="field">
+        <label for="plan-name">Name</label>
+        <input class="input" id="plan-name" name="name" type="text" maxlength="60" value="${esc(plan.name)}" autocomplete="off">
+        <p class="field-error" data-error="name" hidden></p>
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label for="plan-start">Starts</label>
+          <input class="input" id="plan-start" name="startMonth" type="month" value="${esc(plan.startMonth)}">
+          <p class="field-error" data-error="startMonth" hidden></p>
+        </div>
+        <div class="field">
+          <label for="plan-years">Years</label>
+          <input class="input" id="plan-years" name="years" type="text" inputmode="numeric" value="${plan.years}" autocomplete="off">
+          <p class="field-error" data-error="years" hidden></p>
+        </div>
+      </div>
+      <p class="field-hint" style="margin:-6px 0 16px">The balance on each line is what it held at the start.</p>
+      <div class="field">
+        <label for="plan-notes">Notes</label>
+        <textarea class="input" id="plan-notes" name="notes" rows="4">${esc(plan.notes)}</textarea>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="button" data-action="close-sheet">Cancel</button>
+        <button type="submit" class="button is-primary">Save</button>
+      </div>
+    </form>`);
+}
+
+function lineForm(lineId) {
+  const plan = app.state.plan;
+  const existing = lineId ? plan.lines.find((l) => l.id === lineId) : null;
+  const line = existing || { id: null, name: '', kind: 'asset', accountIds: [], startPence: 0, growthPct: 0, lisa: false, aprPct: 0, paymentPence: 0, redirectTo: null, phases: [] };
+  const isDebt = line.kind === 'debt';
+  const others = plan.lines.filter((l) => l.id !== line.id && l.kind === 'asset');
+  const phaseRows = line.phases.map((phase) => `
+    <button type="button" class="list-row no-lead" data-action="plan-phase" data-arg="${esc(line.id)}" data-phase="${esc(phase.id)}">
+      <span class="row-main"><span class="row-title">${esc(`${pounds(phase.amountPence)} a month`)}</span>
+        <span class="row-sub">${esc(phaseSummary(phase, plan))}</span></span>
+      <span class="row-chevron">${icon.chevron}</span>
+    </button>`).join('');
+
+  openSheet(existing ? existing.name : 'Add a line', `
+    <form data-form="plan-line" data-arg="${esc(line.id || '')}" novalidate>
+      <div class="field">
+        <label for="line-name">Name</label>
+        <input class="input" id="line-name" name="name" type="text" maxlength="60" value="${esc(line.name)}" autocomplete="off">
+        <p class="field-error" data-error="name" hidden></p>
+      </div>
+      <div class="field">
+        <label for="line-kind">Kind</label>
+        <select class="select" id="line-kind" name="kind" ${existing ? 'disabled' : ''} data-change="line-kind">
+          <option value="asset"${!isDebt ? ' selected' : ''}>A pot of money</option>
+          <option value="debt"${isDebt ? ' selected' : ''}>A debt</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="line-start">Balance at the start of the plan</label>
+        <input class="input" id="line-start" name="start" type="text" inputmode="decimal" value="${esc(penceText(line.startPence))}" autocomplete="off">
+        <p class="field-error" data-error="start" hidden></p>
+      </div>
+      <div data-kind-field="asset"${isDebt ? ' hidden' : ''}>
+        <div class="field">
+          <label for="line-growth">Growth, percent a year</label>
+          <input class="input" id="line-growth" name="growth" type="text" inputmode="decimal" value="${esc(line.growthPct)}" autocomplete="off">
+          <p class="field-error" data-error="growth" hidden></p>
+        </div>
+        <label class="check-row" style="margin-bottom:16px"><input type="checkbox" class="check" name="lisa" value="1"${line.lisa ? ' checked' : ''}>
+          <span><span class="check-title">This is a Lifetime ISA</span><span class="check-sub">£4,000 a tax year at most, with a 25% bonus on top</span></span></label>
+      </div>
+      <div data-kind-field="debt"${isDebt ? '' : ' hidden'}>
+        <div class="field-row">
+          <div class="field">
+            <label for="line-apr">Interest, APR</label>
+            <input class="input" id="line-apr" name="apr" type="text" inputmode="decimal" value="${esc(line.aprPct)}" autocomplete="off">
+            <p class="field-error" data-error="apr" hidden></p>
+          </div>
+          <div class="field">
+            <label for="line-payment">Paid each month</label>
+            <input class="input" id="line-payment" name="payment" type="text" inputmode="decimal" value="${esc(penceText(line.paymentPence))}" autocomplete="off">
+            <p class="field-error" data-error="payment" hidden></p>
+          </div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="line-redirect" data-kind-label data-asset="Money this line cannot take goes to" data-debt="Once it is paid off, the payment goes to">${isDebt ? 'Once it is paid off, the payment goes to' : 'Money this line cannot take goes to'}</label>
+        <select class="select" id="line-redirect" name="redirectTo">
+          <option value="">Nowhere, count it as unplanned</option>
+          ${others.map((l) => `<option value="${esc(l.id)}"${line.redirectTo === l.id ? ' selected' : ''}>${esc(l.name)}</option>`).join('')}
+        </select>
+        <p class="field-hint" data-kind-label data-asset="Used when the line is full, closed at the purchase, or over the Lifetime ISA limit." data-debt="The monthly payment carries on, into this pot.">${isDebt ? 'The monthly payment carries on, into this pot.' : 'Used when the line is full, closed at the purchase, or over the Lifetime ISA limit.'}</p>
+      </div>
+      <fieldset class="field">
+        <legend class="field-label">Linked accounts</legend>
+        ${checkList('accounts', accountOptions(), line.accountIds)}
+        <p class="field-hint">Their real balance is compared with this line. Leave all unticked to follow the plan's own figures.</p>
+      </fieldset>
+      <div data-kind-field="asset"${isDebt ? ' hidden' : ''}>
+        <p class="field-label" style="margin-bottom:6px">Monthly amounts</p>
+        ${existing ? `<div class="list-group">
+          ${phaseRows}
+          <button type="button" class="list-row" data-action="plan-phase" data-arg="${esc(line.id)}">
+            <span class="row-icon">${icon.plus}</span><span class="row-main"><span class="row-title">Add a monthly amount</span></span><span></span>
+          </button>
+        </div>` : '<p class="field-hint">Save the line first, then add what goes into it each month.</p>'}
+      </div>
+      <p class="field-error" data-error="form" hidden></p>
+      <div class="form-actions">
+        <button type="button" class="button" data-action="close-sheet">Cancel</button>
+        <button type="submit" class="button is-primary">${existing ? 'Save' : 'Add the line'}</button>
+      </div>
+      ${existing ? `<button type="button" class="button is-block is-quiet-danger" style="margin-top:10px" data-action="plan-line-delete" data-arg="${esc(line.id)}">${icon.trash}Delete this line</button>` : ''}
+    </form>`);
+}
+
+/** When a monthly amount runs, in words. */
+function phaseSummary(phase, plan) {
+  const cond = (c, from) => {
+    if (!c) return from ? 'from the start' : 'to the end';
+    if (c.type === 'month') return `${from ? 'from' : 'until'} ${monthLabel(c.month)}`;
+    if (c.type === 'cleared') return `${from ? 'once' : 'until'} ${lineName(plan, c.line)} is paid off`;
+    return from ? 'after the purchase' : 'until the purchase';
+  };
+  const parts = [`${cond(phase.start, true)} ${cond(phase.end, false)}`];
+  if (phase.capPence !== null) parts.push(`up to a balance of ${pounds(phase.capPence)}`);
+  return parts.join(', ');
+}
+
+function conditionField(name, label, cond, plan, isStart) {
+  const debts = plan.lines.filter((l) => l.kind === 'debt');
+  const value = !cond ? '' : cond.type === 'cleared' ? `cleared:${cond.line}` : cond.type;
+  const options = [
+    ['', isStart ? 'From the start of the plan' : 'To the end of the plan'],
+    ['month', isStart ? 'From a month' : 'Until a month, included'],
+    ...debts.map((d) => [`cleared:${d.id}`, isStart ? `Once ${d.name} is paid off` : `Until ${d.name} is paid off`]),
+    ...(plan.purchase ? [['purchase', isStart ? 'After the house purchase' : 'Until the house purchase']] : [])
+  ];
+  return `
+    <div class="field">
+      <label for="phase-${name}">${esc(label)}</label>
+      <select class="select" id="phase-${name}" name="${name}" data-change="phase-when" data-target="${name}Month">
+        ${options.map(([v, text]) => `<option value="${esc(v)}"${v === value ? ' selected' : ''}>${esc(text)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="field" data-month-for="${name}Month"${value === 'month' ? '' : ' hidden'}>
+      <label for="phase-${name}-month">${isStart ? 'First month' : 'Last month'}</label>
+      <input class="input" id="phase-${name}-month" name="${name}Month" type="month" value="${esc(cond && cond.type === 'month' ? cond.month : '')}">
+      <p class="field-error" data-error="${name}Month" hidden></p>
+    </div>`;
+}
+
+function phaseForm(lineId, phaseId) {
+  const plan = app.state.plan;
+  const line = plan.lines.find((l) => l.id === lineId);
+  if (!line) return;
+  const existing = phaseId ? line.phases.find((p) => p.id === phaseId) : null;
+  const phase = existing || { amountPence: 0, capPence: null, start: null, end: null };
+  openSheet(existing ? `Monthly amount into ${line.name}` : `Add to ${line.name}`, `
+    <form data-form="plan-phase" data-arg="${esc(lineId)}" data-phase="${esc(phaseId || '')}" novalidate>
+      <div class="field">
+        <label for="phase-amount">Each month</label>
+        <input class="input input-money" id="phase-amount" name="amount" type="text" inputmode="decimal" value="${existing ? esc(penceText(phase.amountPence)) : ''}" placeholder="£0.00" autocomplete="off">
+        <p class="field-error" data-error="amount" hidden></p>
+      </div>
+      ${conditionField('start', 'Starts', phase.start, plan, true)}
+      ${conditionField('end', 'Stops', phase.end, plan, false)}
+      <div class="field">
+        <label for="phase-cap">Stop filling at a balance of</label>
+        <input class="input" id="phase-cap" name="cap" type="text" inputmode="decimal" value="${phase.capPence === null ? '' : esc(penceText(phase.capPence))}" placeholder="No limit" autocomplete="off">
+        <p class="field-hint">Optional. Once the line holds this much, the rest goes where the line sends its overflow.</p>
+        <p class="field-error" data-error="cap" hidden></p>
+      </div>
+      <div class="form-actions">
+        <button type="button" class="button" data-action="plan-line" data-arg="${esc(lineId)}">Back</button>
+        <button type="submit" class="button is-primary">Save</button>
+      </div>
+      ${existing ? `<button type="button" class="button is-block is-quiet-danger" style="margin-top:10px" data-action="plan-phase-delete" data-arg="${esc(lineId)}" data-phase="${esc(phaseId)}">${icon.trash}Delete this amount</button>` : ''}
+    </form>`);
+}
+
+function purchaseForm() {
+  const plan = app.state.plan;
+  const p = plan.purchase || {
+    month: P.monthFromIndex(P.monthIndex(plan.startMonth) + 60), pricePence: 0, minDepositPct: 10, costsPence: 0,
+    mortgageRatePct: 5, mortgageYears: 30, overpaymentPence: 0, houseGrowthPct: 0,
+    lisaLine: null, depositLines: [], leftoverTo: null, houseAccountIds: [], mortgageAccountIds: []
+  };
+  const assets = plan.lines.filter((l) => l.kind === 'asset');
+  const lineOption = (l, chosen) => `<option value="${esc(l.id)}"${chosen === l.id ? ' selected' : ''}>${esc(l.name)}</option>`;
+  const money = (name, label, pence, hint = '') => `
+    <div class="field">
+      <label for="buy-${name}">${esc(label)}</label>
+      <input class="input" id="buy-${name}" name="${name}" type="text" inputmode="decimal" value="${esc(penceText(pence))}" autocomplete="off">
+      ${hint ? `<p class="field-hint">${esc(hint)}</p>` : ''}
+      <p class="field-error" data-error="${name}" hidden></p>
+    </div>`;
+  const number = (name, label, value) => `
+    <div class="field">
+      <label for="buy-${name}">${esc(label)}</label>
+      <input class="input" id="buy-${name}" name="${name}" type="text" inputmode="decimal" value="${esc(value)}" autocomplete="off">
+      <p class="field-error" data-error="${name}" hidden></p>
+    </div>`;
+
+  openSheet(plan.purchase ? 'House purchase' : 'Add a house purchase', `
+    <form data-form="plan-purchase" novalidate>
+      <div class="field">
+        <label for="buy-month">Month</label>
+        <input class="input" id="buy-month" name="month" type="month" value="${esc(p.month)}">
+        <p class="field-error" data-error="month" hidden></p>
+      </div>
+      <div class="field-row">
+        ${money('price', 'Price', p.pricePence)}
+        ${number('minDeposit', 'Minimum deposit, %', p.minDepositPct)}
+      </div>
+      ${money('costs', 'Buying costs', p.costsPence, 'Fees, survey, moving and furnishing. These need cash: a Lifetime ISA can only go toward the price.')}
+      <div class="field-row">
+        ${number('rate', 'Mortgage rate, %', p.mortgageRatePct)}
+        ${number('term', 'Term, years', p.mortgageYears)}
+      </div>
+      <div class="field-row">
+        ${money('overpay', 'Extra each month', p.overpaymentPence)}
+        ${number('growth', 'House growth, % a year', p.houseGrowthPct)}
+      </div>
+      <div class="field">
+        <label for="buy-lisa">Lifetime ISA</label>
+        <select class="select" id="buy-lisa" name="lisaLine">
+          <option value="">None</option>
+          ${assets.map((l) => lineOption(l, p.lisaLine)).join('')}
+        </select>
+        <p class="field-hint">All of it goes toward the price.</p>
+      </div>
+      <fieldset class="field">
+        <legend class="field-label">Deposit pots</legend>
+        ${checkList('depositLines', assets.map((l) => ({ value: l.id, label: l.name })), p.depositLines)}
+        <p class="field-hint">They top the deposit up to the smallest allowed, pay the buying costs, and close.</p>
+      </fieldset>
+      <div class="field">
+        <label for="buy-leftover">Whatever the pots have left goes to, and any shortfall comes from</label>
+        <select class="select" id="buy-leftover" name="leftoverTo">
+          <option value="">Nowhere</option>
+          ${assets.map((l) => lineOption(l, p.leftoverTo)).join('')}
+        </select>
+      </div>
+      <fieldset class="field">
+        <legend class="field-label">Linked to the house</legend>
+        ${checkList('houseAccountIds', accountOptions(), p.houseAccountIds)}
+      </fieldset>
+      <fieldset class="field">
+        <legend class="field-label">Linked to the mortgage</legend>
+        ${checkList('mortgageAccountIds', accountOptions(), p.mortgageAccountIds)}
+      </fieldset>
+      <div class="form-actions">
+        <button type="button" class="button" data-action="close-sheet">Cancel</button>
+        <button type="submit" class="button is-primary">Save</button>
+      </div>
+      ${plan.purchase ? `<button type="button" class="button is-block is-quiet-danger" style="margin-top:10px" data-action="plan-purchase-delete">${icon.trash}Remove the purchase</button>` : ''}
+    </form>`);
+}
+
+/* Reading the plan forms. Each reader sets the field's error and returns null on a bad value. */
+
+function readMoney(form, data, name, { optional = false, allowNegative = false } = {}) {
+  const raw = String(data.get(name) || '').trim();
+  if (optional && raw === '') return { pence: null };
+  const parsed = parseMoneyToPence(raw, { allowZero: true, allowNegative });
+  if (!parsed.ok) { setFieldError(form, name, parsed.error); return null; }
+  return { pence: parsed.pence };
+}
+
+function readNumber(form, data, name, { min = -100, max = 100, whole = false } = {}) {
+  const raw = String(data.get(name) || '').trim().replace(/%$/, '');
+  const pattern = whole ? /^\d{1,3}$/ : /^-?\d{1,3}(\.\d{1,2})?$/;
+  if (!pattern.test(raw)) { setFieldError(form, name, whole ? 'Enter a whole number.' : 'Enter a number like 5 or 4.5.'); return null; }
+  const value = Number(raw);
+  if (value < min || value > max) { setFieldError(form, name, `Enter a number from ${min} to ${max}.`); return null; }
+  return { value };
+}
+
+function readMonth(form, data, name) {
+  const raw = String(data.get(name) || '').trim();
+  if (!isValidMonth(raw)) { setFieldError(form, name, 'Choose a month.'); return null; }
+  return { month: raw };
+}
+
+function savePlan(mutator) {
+  return commit((draft) => {
+    mutator(draft.plan);
+    draft.plan = normalisePlan(draft.plan, new Set(draft.accounts.map((a) => a.id)));
+  }, { silent: true });
+}
+
+function handlePlanSettingsSubmit(form) {
+  clearErrors(form);
+  const data = new FormData(form);
+  const name = String(data.get('name') || '').trim();
+  if (!name) { setFieldError(form, 'name', 'Give the plan a name.'); return; }
+  const start = readMonth(form, data, 'startMonth');
+  const years = readNumber(form, data, 'years', { min: 1, max: 40, whole: true });
+  if (!start || !years) return;
+  savePlan((plan) => {
+    plan.name = name;
+    plan.startMonth = start.month;
+    plan.years = years.value;
+    plan.notes = String(data.get('notes') || '').trim();
+  });
+  closeSheet();
+  render();
+}
+
+function handlePlanLineSubmit(form) {
+  clearErrors(form);
+  const data = new FormData(form);
+  const id = form.dataset.arg || null;
+  const plan = app.state.plan;
+  const existing = id ? plan.lines.find((l) => l.id === id) : null;
+  const kind = existing ? existing.kind : (data.get('kind') === 'debt' ? 'debt' : 'asset');
+  const name = String(data.get('name') || '').trim();
+  if (!name) { setFieldError(form, 'name', 'Give the line a name.'); return; }
+  if (plan.lines.some((l) => l.id !== id && l.name.toLowerCase() === name.toLowerCase())) {
+    setFieldError(form, 'name', 'Another line already has that name.');
+    return;
+  }
+  const start = readMoney(form, data, 'start');
+  if (!start) return;
+  const line = {
+    ...(existing || { phases: [] }),
+    id: id || nextId('line'),
+    name,
+    kind,
+    startPence: start.pence,
+    accountIds: data.getAll('accounts').map(String),
+    redirectTo: String(data.get('redirectTo') || '') || null
+  };
+  if (kind === 'asset') {
+    const growth = readNumber(form, data, 'growth', { min: -50, max: 50 });
+    if (!growth) return;
+    line.growthPct = growth.value;
+    line.lisa = data.get('lisa') === '1';
+  } else {
+    const apr = readNumber(form, data, 'apr', { min: 0, max: 100 });
+    const payment = readMoney(form, data, 'payment');
+    if (!apr || !payment) return;
+    line.aprPct = apr.value;
+    line.paymentPence = payment.pence;
+  }
+  savePlan((draft) => {
+    const index = draft.lines.findIndex((l) => l.id === line.id);
+    if (index >= 0) draft.lines[index] = line; else draft.lines.push(line);
+  });
+  // A new pot opens again straight away, ready for its monthly amounts.
+  if (!existing && kind === 'asset') lineForm(line.id);
+  else closeSheet();
+  render();
+}
+
+function readCondition(form, data, name) {
+  const value = String(data.get(name) || '');
+  if (!value) return { cond: null };
+  if (value === 'purchase') return { cond: { type: 'purchase' } };
+  if (value.startsWith('cleared:')) return { cond: { type: 'cleared', line: value.slice(8) } };
+  const month = readMonth(form, data, `${name}Month`);
+  return month ? { cond: { type: 'month', month: month.month } } : null;
+}
+
+function handlePlanPhaseSubmit(form) {
+  clearErrors(form);
+  const data = new FormData(form);
+  const lineId = form.dataset.arg;
+  const phaseId = form.dataset.phase || null;
+  const amount = readMoney(form, data, 'amount');
+  const cap = readMoney(form, data, 'cap', { optional: true });
+  const start = readCondition(form, data, 'start');
+  const end = readCondition(form, data, 'end');
+  if (!amount || !cap || !start || !end) return;
+  if (start.cond && end.cond && start.cond.type === 'month' && end.cond.type === 'month' && end.cond.month < start.cond.month) {
+    setFieldError(form, 'endMonth', 'The last month comes before the first.');
+    return;
+  }
+  const phase = { id: phaseId || nextId('phase'), amountPence: amount.pence, capPence: cap.pence, start: start.cond, end: end.cond };
+  savePlan((plan) => {
+    const line = plan.lines.find((l) => l.id === lineId);
+    if (!line) return;
+    const index = line.phases.findIndex((p) => p.id === phase.id);
+    if (index >= 0) line.phases[index] = phase; else line.phases.push(phase);
+  });
+  lineForm(lineId);
+  render();
+}
+
+function handlePlanPurchaseSubmit(form) {
+  clearErrors(form);
+  const data = new FormData(form);
+  const month = readMonth(form, data, 'month');
+  const minDeposit = readNumber(form, data, 'minDeposit', { min: 0, max: 100 });
+  const price = readMoney(form, data, 'price');
+  const costs = readMoney(form, data, 'costs');
+  const rate = readNumber(form, data, 'rate', { min: 0, max: 30 });
+  const term = readNumber(form, data, 'term', { min: 1, max: 40, whole: true });
+  const overpay = readMoney(form, data, 'overpay');
+  const growth = readNumber(form, data, 'growth', { min: -50, max: 50 });
+  if (!month || !minDeposit || !price || !costs || !rate || !term || !overpay || !growth) return;
+  if (price.pence <= 0) { setFieldError(form, 'price', 'Enter the price you expect to pay.'); return; }
+  savePlan((plan) => {
+    plan.purchase = {
+      month: month.month,
+      pricePence: price.pence,
+      minDepositPct: minDeposit.value,
+      costsPence: costs.pence,
+      mortgageRatePct: rate.value,
+      mortgageYears: term.value,
+      overpaymentPence: overpay.pence,
+      houseGrowthPct: growth.value,
+      lisaLine: String(data.get('lisaLine') || '') || null,
+      depositLines: data.getAll('depositLines').map(String),
+      leftoverTo: String(data.get('leftoverTo') || '') || null,
+      houseAccountIds: data.getAll('houseAccountIds').map(String),
+      mortgageAccountIds: data.getAll('mortgageAccountIds').map(String)
+    };
+  });
+  closeSheet();
+  render();
+}
+
 /* ------------------------------------------------------------------ */
 /* Export and import                                                   */
 /* ------------------------------------------------------------------ */
@@ -1901,6 +2724,65 @@ const ACTIONS = {
     });
   },
 
+  'plan-create'(el) {
+    const plan = el.dataset.arg === 'house'
+      ? P.housePlan(app.state.accounts)
+      : normalisePlan({ name: 'My plan', startMonth: todayISO().slice(0, 7), years: 10, lines: [], purchase: null, notes: '' });
+    commit((draft) => { draft.plan = plan; });
+    window.scrollTo(0, 0);
+  },
+  'plan-settings': planSettingsForm,
+  'plan-line'(el) { lineForm(el.dataset.arg || null); },
+  'plan-phase'(el) { phaseForm(el.dataset.arg, el.dataset.phase || null); },
+  'plan-purchase': purchaseForm,
+
+  'plan-line-delete'(el) {
+    const line = app.state.plan.lines.find((l) => l.id === el.dataset.arg);
+    if (!line) return;
+    confirmSheet({
+      title: `Delete ${line.name}?`,
+      body: 'Its monthly amounts go with it, and any line that sent money to it will count that money as unplanned instead. Your accounts are not touched.',
+      confirmLabel: 'Delete it',
+      danger: true,
+      onConfirm: () => {
+        savePlan((plan) => { plan.lines = plan.lines.filter((l) => l.id !== line.id); });
+        closeSheet();
+        render();
+      }
+    });
+  },
+
+  'plan-phase-delete'(el) {
+    const lineId = el.dataset.arg;
+    savePlan((plan) => {
+      const line = plan.lines.find((l) => l.id === lineId);
+      if (line) line.phases = line.phases.filter((p) => p.id !== el.dataset.phase);
+    });
+    lineForm(lineId);
+    render();
+  },
+
+  'plan-purchase-delete'() {
+    savePlan((plan) => { plan.purchase = null; });
+    closeSheet();
+    render();
+  },
+
+  'plan-delete'() {
+    confirmSheet({
+      title: 'Delete the plan?',
+      body: 'This removes the plan and every figure in it. Your accounts and entries are not touched. Export a backup first if you might want it back.',
+      confirmLabel: 'Delete the plan',
+      danger: true,
+      extraAction: { label: 'Export a backup first', action: 'export-json' },
+      onConfirm: () => {
+        commit((draft) => { draft.plan = null; }, { silent: true });
+        closeSheet();
+        render();
+      }
+    });
+  },
+
   'refresh-prices': refreshPrices,
   'apply-update': applyUpdate,
 
@@ -1957,8 +2839,29 @@ document.addEventListener('submit', (event) => {
       form.dataset.forceNext = '';
       handleTransactionSubmit(form, { force });
     } else if (kind === 'goal') handleGoalSubmit(form);
+    else if (kind === 'plan-settings') handlePlanSettingsSubmit(form);
+    else if (kind === 'plan-line') handlePlanLineSubmit(form);
+    else if (kind === 'plan-phase') handlePlanPhaseSubmit(form);
+    else if (kind === 'plan-purchase') handlePlanPurchaseSubmit(form);
   } catch (error) {
     addBanner({ kind: 'error', title: 'That could not be saved', body: `${error.message}. Nothing has been changed.` });
+  }
+});
+
+// Selects that change what is shown without saving anything.
+document.addEventListener('change', (event) => {
+  const el = event.target.closest && event.target.closest('[data-change]');
+  if (!el) return;
+  if (el.dataset.change === 'plan-year') {
+    app.planYear = Number(el.value);
+    render();
+  } else if (el.dataset.change === 'line-kind') {
+    const form = el.closest('form');
+    form.querySelectorAll('[data-kind-field]').forEach((field) => { field.hidden = field.dataset.kindField !== el.value; });
+    form.querySelectorAll('[data-kind-label]').forEach((label) => { label.textContent = label.dataset[el.value]; });
+  } else if (el.dataset.change === 'phase-when') {
+    const field = el.closest('form').querySelector(`[data-month-for="${el.dataset.target}"]`);
+    if (field) field.hidden = el.value !== 'month';
   }
 });
 

@@ -84,6 +84,11 @@ function monthName(key) {
   return { short: MONTHS_SHORT[Number(m) - 1], long: `${MONTHS_LONG[Number(m) - 1]} ${y}` };
 }
 
+/** "February 2032" from a "2032-02" month key. */
+export function monthLabel(key) {
+  return monthName(key).long;
+}
+
 /** Rough text width so labels can be trimmed before they collide. */
 function textWidth(text, fontSize, bold = false) {
   return String(text).length * fontSize * (bold ? 0.58 : 0.54);
@@ -262,6 +267,95 @@ export function lineChart({ series, width, height = 190, label, onCanvas = false
 }
 
 /** Month end values, for the table twin of a daily line. */
+/* ------------------------------------------------------------------ */
+/* The plan chart: three lines on one time axis                        */
+/*                                                                     */
+/* The plan is the reference, so it is the recessive mark: a wide     */
+/* grey band. Where you have been is the solid accent line, and where  */
+/* you are heading carries on from it in the same colour, dashed. Each */
+/* is told apart by its shape as well as its colour.                   */
+/* ------------------------------------------------------------------ */
+
+const dayNumber = (iso) => Date.UTC(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)) - 1, Number(iso.slice(8, 10))) / 86400000;
+
+const lineSample = (cls) => `<svg width="26" height="10" viewBox="0 0 26 10" aria-hidden="true"><line class="${cls}" x1="4" x2="22" y1="5" y2="5"/></svg>`;
+
+export function planChart({ planned, you, forecast, today, width, height = 210, label }) {
+  if (!planned || planned.length < 2) return '';
+  // Room above the top tick for the Today label, so the two never meet.
+  const padTop = 36;
+  const padBottom = 26;
+  const plotH = height - padTop - padBottom;
+  const d0 = dayNumber(planned[0].date);
+  const d1 = dayNumber(planned[planned.length - 1].date);
+  const x = (iso) => 2 + (((dayNumber(iso) - d0) / ((d1 - d0) || 1)) * (width - 4));
+
+  const values = [...planned, ...you, ...forecast].map((p) => p.valuePence);
+  const scale = niceScale(Math.min(...values), Math.max(...values), 4);
+  const span = (scale.max - scale.min) || 1;
+  const y = (v) => padTop + plotH - (((v - scale.min) / span) * plotH);
+  const path = (list) => list.map((p, i) => `${i ? 'L' : 'M'}${x(p.date).toFixed(1)},${y(p.valuePence).toFixed(1)}`).join('');
+
+  const tickText = axisFormatter(scale.ticks);
+  const grid = scale.ticks.map((t) =>
+    `<line class="gridline" x1="0" x2="${width}" y1="${y(t).toFixed(1)}" y2="${y(t).toFixed(1)}"/>`).join('');
+  const tickLabels = scale.ticks.map((t) =>
+    `<text class="axis-label" x="0" y="${(y(t) - 5).toFixed(1)}">${esc(tickText(t))}</text>`).join('');
+  const zero = scale.min < 0 && scale.max > 0
+    ? `<line class="baseline" x1="0" x2="${width}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>` : '';
+
+  const showToday = today >= planned[0].date && today <= planned[planned.length - 1].date;
+  const tx = showToday ? x(today) : 0;
+  const todayMark = showToday ? `
+    <line class="today-line" x1="${tx.toFixed(1)}" x2="${tx.toFixed(1)}" y1="16" y2="${padTop + plotH}"/>
+    <text class="axis-label" x="${Math.min(width - 20, Math.max(20, tx)).toFixed(1)}" y="11" text-anchor="middle">Today</text>` : '';
+
+  // Scrubbing reads every month start: your figure where there is one,
+  // the forecast after today, and the plan alongside for comparison.
+  const yours = new Map([...you, ...forecast].map((p) => [p.date, p.valuePence]));
+  const data = planned.map((p) => {
+    const mine = yours.has(p.date) ? yours.get(p.date) : null;
+    const mainValue = mine === null ? p.valuePence : mine;
+    const who = mine === null ? 'planned' : (p.date > today ? 'forecast' : 'you');
+    const suffix = mine === null
+      ? ` planned for ${longDate(p.date)}`
+      : ` ${who}, against ${formatMoney(p.valuePence, { showPence: false })} planned, on ${longDate(p.date)}`;
+    return [Math.round(x(p.date) * 10) / 10, Math.round(y(mainValue) * 10) / 10, p.date, mainValue, suffix];
+  });
+
+  const end = forecast.length ? forecast[forecast.length - 1] : (you.length ? you[you.length - 1] : null);
+  const svg = `${svgOpen(width, height, label, ` data-points="${esc(JSON.stringify(data))}"`)}
+    ${grid}${zero}${todayMark}
+    <path d="${path(planned)}" class="line-plan"/>
+    ${you.length > 1 ? `<path d="${path(you)}" class="line-path"/>` : ''}
+    ${forecast.length > 1 ? `<path d="${path(forecast)}" class="line-forecast"/>` : ''}
+    ${end ? `<circle class="line-end on-surface" cx="${x(end.date).toFixed(1)}" cy="${y(end.valuePence).toFixed(1)}" r="4.5"/>` : ''}
+    ${tickLabels}
+    <text class="axis-label" x="2" y="${height - 6}">${esc(monthName(planned[0].date.slice(0, 7)).long)}</text>
+    <text class="axis-label" x="${width - 2}" y="${height - 6}" text-anchor="end">${esc(monthName(planned[planned.length - 1].date.slice(0, 7)).long)}</text>
+    <g class="crosshair-group" visibility="hidden">
+      <line class="crosshair" x1="0" x2="0" y1="${padTop - 6}" y2="${padTop + plotH}"/>
+      <circle class="crosshair-dot" cx="0" cy="0" r="6"/>
+    </g>
+    <rect class="scrub-target" x="0" y="0" width="${width}" height="${height}" fill="transparent"/>
+  </svg>`;
+
+  const key = `<ul class="legend">
+    <li>${lineSample('line-plan')}<span class="legend-name">Plan</span></li>
+    ${you.length > 1 ? `<li>${lineSample('line-path')}<span class="legend-name">You</span></li>` : ''}
+    ${forecast.length > 1 ? `<li>${lineSample('line-forecast')}<span class="legend-name">Forecast from today</span></li>` : ''}
+  </ul>`;
+  return `${svg}${key}`;
+}
+
+/** The plan chart's table twin: net worth at the end of each plan year. */
+export function planTable(rows) {
+  return tableView('Net worth at the end of each plan year',
+    ['Year end', 'Plan', 'Forecast'],
+    rows.map((r) => [monthName(r.month).long, formatMoney(r.planPence, { showPence: false }),
+      r.forecastPence === null ? '' : formatMoney(r.forecastPence, { showPence: false })]));
+}
+
 function monthEnds(series) {
   const byMonth = new Map();
   for (const p of series) byMonth.set(monthKey(p.date), p);

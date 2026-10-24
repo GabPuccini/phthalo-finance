@@ -1,7 +1,8 @@
 # Testing
 
-What was actually run for the October 2026 redesign, what it said, and what is not
-covered. Everything below was executed rather than described.
+What was actually run for the October 2026 redesign and the long term plan that followed
+it, what it said, and what is not covered. Everything below was executed rather than
+described.
 
 Environment: Node v22.22.0 on Linux, Chromium driven by Playwright 1.63, viewport 375 by
 812 at a device pixel ratio of 2, in both themes.
@@ -11,21 +12,21 @@ Environment: Node v22.22.0 on Linux, Chromium driven by Playwright 1.63, viewpor
 ```
 $ node --test
 
-# tests 87
+# tests 110
 # suites 0
-# pass 87
+# pass 110
 # fail 0
 # cancelled 0
 # skipped 0
 # todo 0
-# duration_ms 5294.240927
+# duration_ms 5388.778782
 ```
 
 Nothing needs installing to run this. Most of the five seconds is one test that genuinely
 waits out the five second price lookup timeout.
 
-84 of the 87 live in `tests/cases.js` and also run in the browser: opening `tests.html`
-reports **All 84 tests passed** with a clean console. The other three need the file
+107 of the 110 live in `tests/cases.js` and also run in the browser: opening `tests.html`
+reports **All 107 tests passed** with a clean console. The other three need the file
 system, so they run under Node only:
 
 * `styles.css` carries exactly the colours in `src/logic.js`, which are the measured ones.
@@ -49,13 +50,16 @@ system, so they run under Node only:
 | CSV, import, migration | escaping, signed withdrawals, malformed and empty files, wrong types, a version 0 file, an old saved layout |
 | Prices | a good response, malformed JSON, rate limiting, offline, a nonsense price, the five second timeout |
 | Palette | every text colour on every background in both themes, button labels, chart marks, category badges, the fixed allocation order |
+| The plan engine | months and tax years; the mortgage formula (£153,000 at 5% over 30 years is £821.34); a loan clearing on the same payment count as the payoff projection, at £188 in February 2032 and at £247 nearly two years sooner; the Lifetime ISA bonus, its £4,000 limit and the April reset; a full pot passing money on; a cleared debt passing its payment on; the purchase with the Lifetime ISA to the price, a top up from the pot, and costs the pots cannot cover coming out of savings, with net worth falling by exactly the costs; the house plan's own figures |
+| The plan against real money | ahead, behind and on plan on a hand worked day; a forecast from balances exactly on plan reproducing the plan before and after the purchase and the loan; a loan account with nothing recorded not read as paid off; a debt recorded at zero passing its payment on; the Lifetime ISA allowance already used this tax year; the chart's three lines joining up |
+| The plan's shape | cleaning is idempotent and leaves no reference to a missing line or account; a version 1 save gains an empty plan and keeps one a newer tab wrote; export and import byte for byte with a plan; a broken plan refused on import; deleting an account unlinks it |
 
 ## Browser testing
 
 ```
 $ node tools/browser-smoke.mjs
 
-106 of 106 checks passed
+136 of 136 checks passed
 ```
 
 The site is served from the **parent** directory, so every page loads from
@@ -96,6 +100,35 @@ The site is served from the **parent** directory, so every page loads from
 * **One account only.** All seven charts render, none blank or errored, each with a title.
 * **Wording.** No em dashes, en dashes or hyphenated words in the interface.
 * **Wide screens.** At 1024px the chart sits beside the accounts and Insights uses two columns.
+* **Holdings.** A quantity account's entry form shows pounds or units, never both.
+
+### The plan
+
+Step G of the browser run loads a state like the owner's, saved by the release before
+the plan existed, and checks:
+
+* the save upgrades from version 1 to version 2 with a note and keeps every entry;
+* the empty Plan tab offers the house plan or a blank one, and the house plan arrives
+  with its ten lines, the purchase in October 2031, and links to the matching accounts;
+* the chart draws the plan, your line and the forecast, with its table of numbers;
+* the status chip agrees with the engine, the purchase milestone shows its own month,
+  and the purchase card warns that the buying costs are not covered in cash;
+* £600 into the Lifetime ISA moves the comparison by exactly £600, on the Plan tab and in
+  the Home card that leads to it;
+* a monthly amount edited in its own sheet is saved at once as exact pence and returns to
+  its line; a last month before the first is refused; a month box only shows when the
+  condition is a month;
+* a line is added with a bad growth rate refused first, opens again for its amounts,
+  takes one, and is deleted; a house price of zero is refused and a real one saved;
+* no sideways scroll, every control on the plan and on each of its forms at least 44 by
+  44, and no dashes or hyphenated words anywhere on them;
+* deleting the plan leaves every account and entry as it was.
+
+Separately, the upgrade from the release that was live was rehearsed: installed with the
+demo data, the new release put over the top, the "new version" prompt taken, and then:
+the Plan tab present, the data upgraded to version 2 with a note, all 127 entries
+identical, the house plan set up, the Plan tab drawing with the network off, and only
+the new release left in the cache.
 
 ## Upgrading the copy already on your phone
 
@@ -136,6 +169,16 @@ Found by testing and by looking at screenshots, and fixed:
 7. **The troubleshooting advice to clear site data** did not say that this also deletes
    everything saved. It now says to export first.
 
+## Bugs found while building the plan
+
+1. **A hidden form field could still show.** `.field { display: grid }` outranked the
+   `hidden` attribute, so the entry form for a holding showed the pounds field and the
+   units field together. A single rule now makes `hidden` always win.
+2. **The house plan's own arithmetic.** Running the plan month by month showed that the
+   loan at £188 a month clears in February 2032, not March 2030, and that the cash pots
+   cannot cover the £7,100 of buying costs, because a Lifetime ISA can only go toward the
+   price. The engine reports both rather than hiding them.
+
 ## Measurements behind the colours
 
 The palette is no longer limited to a single hue, which removes the shortfall recorded
@@ -174,7 +217,7 @@ for the first version, where nine accounts could not sit 15 lightness points apa
 ## Running the tests yourself
 
 ```sh
-node --test                      # 87 checks, nothing to install
+node --test                      # 110 checks, nothing to install
 python3 -m http.server 8000      # then open http://localhost:8000/tests.html
 ```
 

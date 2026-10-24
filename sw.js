@@ -20,7 +20,7 @@
  * subfolder on GitHub Pages, not from the domain root.
  */
 
-const CACHE_VERSION = '7c57d128f2b6';
+const CACHE_VERSION = '54997e566625';
 const CACHE_NAME = `phthalo-finance-${CACHE_VERSION}`;
 
 const PRECACHE = [
@@ -34,6 +34,7 @@ const PRECACHE = [
   './src/charts.js',
   './src/icons.js',
   './src/storage.js',
+  './src/plan.js',
   './src/prices.js',
   './src/seed.js',
   './tests/cases.js',

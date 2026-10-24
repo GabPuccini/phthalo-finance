@@ -75,6 +75,7 @@
 <main class="shell" id="main">
   <section id="view-home" class="view" aria-label="Home"></section>
   <section id="view-insights" class="view" aria-label="Insights" hidden></section>
+  <section id="view-plan" class="view" aria-label="Plan" hidden></section>
   <section id="view-activity" class="view" aria-label="Activity" hidden></section>
   <section id="view-settings" class="view" aria-label="Settings" hidden></section>
   <section id="view-account" class="view" aria-label="Account" hidden></section>
@@ -98,6 +99,13 @@
       <path d="M5 20V11M12 20V5M19 20v-6" stroke-linecap="round"/>
     </svg>
     <span>Insights</span>
+  </button>
+  <button type="button" data-action="go" data-view="plan">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">
+      <path d="M4 19.5h4.5V15H13v-4.5h4.5V6H20" stroke-linecap="round" stroke-linejoin="round"/>
+      <circle cx="20" cy="4" r="1.6"/>
+    </svg>
+    <span>Plan</span>
   </button>
   <button type="button" data-action="go" data-view="activity">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" aria-hidden="true">

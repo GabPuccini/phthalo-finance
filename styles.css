@@ -123,6 +123,9 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* A component's own display rule must never beat the hidden attribute. */
+[hidden] { display: none !important; }
+
 h1, h2, h3 { line-height: 1.25; margin: 0; font-weight: 700; }
 p { margin: 0; }
 ul, ol, dl, dd { margin: 0; padding: 0; list-style: none; }
@@ -551,6 +554,7 @@ body.is-detail .fab { bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
 .data-table th:first-child, .data-table td:first-child { text-align: left; }
 .data-table th { font-size: 12px; color: var(--muted); font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em; }
 .data-table tr:last-child td { border-bottom: 0; }
+.data-table td + td, .data-table th + th { white-space: nowrap; }
 
 /* ================= Goal rows in Insights ================= */
 
@@ -873,6 +877,86 @@ body.is-detail .fab { bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
   max-height: 220px; color: var(--ink);
 }
 
+/* ================= Plan ================= */
+
+.plan-layout { display: grid; gap: 12px; }
+.plan-main, .plan-side { display: grid; gap: 12px; align-content: start; }
+.plan-main > .card + .card, .plan-side > .card + .card { margin-top: 0; }
+.plan-side > .section-head { margin: 8px 0 -4px; }
+.plan-start { display: grid; gap: 10px; max-width: 320px; margin: 0 auto; }
+
+/* The plan is the reference, so it is the quiet mark: a wide grey band
+   that your line and the forecast run along, visible even where they
+   sit right on top of it. */
+.line-plan { fill: none; stroke: var(--muted); stroke-opacity: 0.4; stroke-width: 7; stroke-linecap: round; stroke-linejoin: round; }
+.line-forecast { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; stroke-linecap: round; }
+.today-line { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; }
+.legend li svg { flex: none; }
+
+.list-row.is-static { cursor: default; }
+.list-row.is-static:hover, .list-row.is-static:active { background: transparent; }
+.list-row.is-static .row-end { align-self: center; }
+.list-row.is-static .row-title, .list-group.is-wrapping .row-sub { white-space: normal; }
+
+.data-table tr.is-total td { font-weight: 700; border-top: 1.5px solid var(--axis); }
+
+.plan-alert {
+  display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: start;
+  margin-top: 14px; padding: 12px;
+  background: var(--warning-wash); border-radius: 12px;
+}
+.plan-alert svg { width: 20px; height: 20px; color: var(--warning-text); margin-top: 1px; }
+.plan-alert p { font-size: 14.5px; color: var(--ink); }
+
+.plan-notes { display: grid; gap: 8px; font-size: 14px; color: var(--muted); padding-left: 18px; list-style: disc; }
+
+.plan-card {
+  width: 100%; display: grid; gap: 4px;
+  margin: 6px 0 4px; padding: 14px 16px;
+  background: var(--surface); border: 0; border-radius: var(--radius-card);
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.plan-card:hover, .plan-card:active { background: var(--raised); }
+.plan-card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.plan-card-name { font-weight: 700; font-size: 15.5px; }
+.plan-card-line { font-size: 14.5px; }
+.plan-card-next { font-size: 13.5px; color: var(--muted); }
+
+.button.is-quiet-danger { background: transparent; color: var(--negative-text); }
+.button.is-quiet-danger:hover { background: var(--negative-wash); }
+
+/* Ticks: the whole row is the target, and the box itself is 44px square. */
+fieldset.field { border: 0; padding: 0; margin: 0 0 16px; min-width: 0; }
+fieldset.field > legend { padding: 0; margin-bottom: 6px; }
+.check-list { display: grid; gap: 6px; }
+.check-row {
+  display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 10px; align-items: center;
+  min-height: 52px; padding: 4px 12px 4px 4px;
+  background: var(--raised); border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.check-title { display: block; font-size: 15px; }
+.check-sub { display: block; font-size: 13px; color: var(--muted); }
+.check {
+  appearance: none; -webkit-appearance: none;
+  width: 44px; height: 44px; margin: 0;
+  border-radius: 10px; cursor: pointer;
+  background: transparent center / 26px 26px no-repeat;
+  /* An empty box drawn inside the 44px target. */
+  box-shadow: inset 0 0 0 9px var(--raised), inset 0 0 0 11px var(--muted);
+}
+.check:checked {
+  box-shadow: inset 0 0 0 9px var(--raised);
+  background-color: var(--accent);
+  background-size: 18px 18px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%230F1013' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
+}
+:root[data-theme="light"] .check:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23FFFFFF' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E");
+}
+.check:focus-visible { outline: 2px solid var(--accent-text); outline-offset: -4px; }
+textarea.input { min-height: 96px; resize: vertical; line-height: 1.45; }
+
 /* ================= Wider screens ================= */
 
 @media (min-width: 900px) {
@@ -881,6 +965,7 @@ body.is-detail .fab { bottom: calc(20px + env(safe-area-inset-bottom, 0px)); }
   .home-layout .section-head:first-child { margin-top: 6px; }
   .home-layout > #hero-slot { position: sticky; top: 64px; }
   .visual-list { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .plan-layout { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 24px; align-items: start; }
   .sheet { border-radius: 22px; margin-bottom: 24px; }
   .sheet-backdrop { align-items: center; padding: 20px; }
   .fab { right: calc(50% - (var(--shell) / 2) + 16px); }
