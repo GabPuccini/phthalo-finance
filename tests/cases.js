@@ -225,6 +225,54 @@ test('deleting a transaction removes its effect from every earlier day too', () 
   );
 });
 
+test('one account history is built the same way as net worth', () => {
+  const state = makeState(
+    [
+      account('savings', 'Savings', 'balance', 'Cash', { order: 0 }),
+      account('other', 'Other', 'balance', 'Cash', { order: 1 }),
+      account('debt', 'Debt', 'liability', 'Debt', { order: 2 })
+    ],
+    [
+      tx('savings', '2026-08-20', 'in', 100),
+      tx('other', '2026-08-21', 'in', 999),
+      tx('savings', '2026-08-24', 'in', 50),
+      tx('debt', '2026-08-22', 'in', 300),
+      tx('debt', '2026-08-25', 'out', 100)
+    ]
+  );
+  const savings = L.accountSeries(state, 'savings', { today: TODAY });
+  assert.equal(savings[0].date, '2026-08-20', 'starts at the account first entry');
+  assert.equal(savings[savings.length - 1].date, TODAY);
+  assert.deepEqual(savings.map((p) => p.valuePence),
+    [10000, 10000, 10000, 10000, 15000, 15000, 15000], 'other accounts are left out');
+
+  const debt = L.accountSeries(state, 'debt', { today: TODAY });
+  assert.deepEqual(debt.map((p) => p.valuePence), [30000, 30000, 30000, 20000, 20000],
+    'a debt is reported as the positive amount owed');
+
+  assert.deepEqual(L.accountSeries(state, 'missing', { today: TODAY }), []);
+});
+
+test('one account history starts no more than a year back', () => {
+  const state = makeState(
+    [account('savings', 'Savings', 'balance', 'Cash')],
+    [tx('savings', '2023-01-01', 'in', 100), tx('savings', '2026-08-01', 'in', 50)]
+  );
+  const series = L.accountSeries(state, 'savings', { today: TODAY });
+  assert.equal(series[0].date, '2025-08-26');
+  assert.equal(series[0].valuePence, 10000, 'the older entry still counts toward the starting value');
+  assert.equal(series[series.length - 1].valuePence, 15000);
+});
+
+test('an archived account or one with no entries has no history to draw', () => {
+  const state = makeState(
+    [account('a', 'A', 'balance', 'Cash', { archived: true }), account('b', 'B', 'balance', 'Cash')],
+    [tx('a', '2026-01-01', 'in', 100)]
+  );
+  assert.deepEqual(L.accountSeries(state, 'a', { today: TODAY }), []);
+  assert.deepEqual(L.accountSeries(state, 'b', { today: TODAY }), []);
+});
+
 test('the daily series covers a requested window even with no transactions in it', () => {
   const state = makeState([account('savings', 'Savings', 'balance', 'Cash')], []);
   const series = L.buildDailySeries(state, { today: '2026-01-03', fromDate: '2026-01-01' });
@@ -693,7 +741,8 @@ test('position series sorts by value with debt last', () => {
   assert.deepEqual(rows.map((r) => r.name), ['Big', 'Small', 'Debt']);
   assert.equal(rows[0].valuePence, 900000);
   assert.equal(rows[2].valuePence, -300000, 'debt sits below the axis');
-  assert.equal(rows[2].colour, L.LIABILITY_COLOUR);
+  assert.equal(rows[2].categoryKey, 'debt', 'debt wears the debt colour');
+  assert.equal(rows[0].categoryKey, 'investments');
 });
 
 test('contributions bucket into the right months', () => {
@@ -903,12 +952,23 @@ test('migration copes with rubbish input rather than wiping data', () => {
 test('normalising keeps saved visual order and adds anything new', () => {
   const state = L.normaliseState({
     accounts: [], transactions: [],
-    visuals: [{ id: 'goals', enabled: true, order: 0 }, { id: 'netWorth', enabled: false, order: 1 }]
+    visuals: [{ id: 'goals', enabled: true, order: 0 }, { id: 'allocation', enabled: false, order: 1 }]
   }, TODAY);
   assert.equal(state.visuals[0].id, 'goals');
-  assert.equal(state.visuals[1].id, 'netWorth');
+  assert.equal(state.visuals[1].id, 'allocation');
   assert.equal(state.visuals[1].enabled, false);
   assert.equal(state.visuals.length, L.DEFAULT_VISUALS.length, 'new visuals are appended');
+  assert.ok(state.visuals.every((v, i) => v.order === i));
+});
+
+test('a saved layout from before the redesign loses its net worth entry cleanly', () => {
+  // Net worth moved out of the gallery to the top of Home, where it always shows.
+  const state = L.normaliseState({
+    accounts: [], transactions: [],
+    visuals: [{ id: 'netWorth', enabled: true, order: 0 }, { id: 'goals', enabled: true, order: 1 }]
+  }, TODAY);
+  assert.equal(state.visuals.some((v) => v.id === 'netWorth'), false);
+  assert.equal(state.visuals[0].id, 'goals', 'the rest keep their order');
   assert.ok(state.visuals.every((v, i) => v.order === i));
 });
 
@@ -963,7 +1023,9 @@ test('series change reports the move over the window', () => {
 
 test('chart titles say what happened rather than naming the chart', () => {
   const rising = [{ netWorthPence: 100000 }, { netWorthPence: 112000 }];
-  assert.equal(L.netWorthTitle(rising, '1y'), 'Net worth up 12.0 percent over the last 1 year');
+  assert.equal(L.netWorthTitle(rising, '1y'), 'Net worth up 12.0 percent over the last year');
+  assert.equal(L.netWorthTitle(rising, '1m'), 'Net worth up 12.0 percent over the last month');
+  assert.equal(L.netWorthTitle(rising, 'all'), 'Net worth up 12.0 percent since you started');
   const falling = [{ netWorthPence: 100000 }, { netWorthPence: 90000 }];
   assert.match(L.netWorthTitle(falling, '6m'), /^Net worth down 10\.0 percent/);
   assert.match(L.netWorthTitle([], 'all'), /needs a few entries/);
@@ -983,11 +1045,11 @@ test('empty visuals still get a sensible title rather than a blank one', () => {
 /* Palette. These prove the accessibility claims rather than assuming. */
 /* ------------------------------------------------------------------ */
 
-test('every body text colour reaches WCAG AA in both themes', () => {
+test('every text colour reaches WCAG AA on every background in both themes', () => {
   for (const theme of ['light', 'dark']) {
     const t = L.THEME_COLOURS[theme];
-    for (const textKey of ['ink', 'muted', 'positiveText', 'negativeText', 'accentText']) {
-      for (const bgKey of ['surface', 'canvas']) {
+    for (const textKey of ['ink', 'muted', 'accentText', 'positiveText', 'negativeText', 'warningText']) {
+      for (const bgKey of ['surface', 'canvas', 'raised']) {
         const ratio = L.contrastRatio(t[textKey], t[bgKey]);
         assert.ok(
           ratio >= 4.5,
@@ -998,64 +1060,84 @@ test('every body text colour reaches WCAG AA in both themes', () => {
   }
 });
 
-test('the two supporting colours that fail as text have safe replacements', () => {
-  // Recorded on purpose so the reason for the extra tokens stays visible.
-  assert.ok(L.contrastRatio('#1E8C6E', '#FFFFFF') < 4.5, '--positive is not AA as text');
-  assert.ok(L.contrastRatio('#E0A33D', '#FFFFFF') < 4.5, '--accent is not AA as text');
-  assert.ok(L.contrastRatio(L.THEME_COLOURS.light.positiveText, '#FFFFFF') >= 4.5);
-  assert.ok(L.contrastRatio(L.THEME_COLOURS.light.accentText, '#FFFFFF') >= 4.5);
-});
-
-test('a label placed on any account colour is readable', () => {
-  for (const stop of L.PHTHALO_SCALE) {
-    const text = L.readableTextOn(stop.hex);
-    assert.ok(
-      L.contrastRatio(text, stop.hex) >= 4.5,
-      `${stop.token} cannot carry a readable label`
-    );
+test('a button label on the accent fill is readable in both themes', () => {
+  for (const theme of ['light', 'dark']) {
+    const t = L.THEME_COLOURS[theme];
+    const ratio = L.contrastRatio(t.accentInk, t.accent);
+    assert.ok(ratio >= 4.5, `${theme}: button label is ${ratio.toFixed(2)} to 1`);
   }
-  assert.ok(L.contrastRatio(L.readableTextOn(L.LIABILITY_COLOUR), L.LIABILITY_COLOUR) >= 4.5);
 });
 
-test('account colours walk down the scale and keep categories together', () => {
-  const accounts = [
-    { id: 'btc', category: 'Crypto', type: 'quantity', order: 0 },
-    { id: 'eth', category: 'Crypto', type: 'quantity', order: 1 },
-    { id: 'sol', category: 'Crypto', type: 'quantity', order: 2 },
-    { id: 'gold', category: 'Precious metals', type: 'quantity', order: 3 },
-    { id: 'silver', category: 'Precious metals', type: 'quantity', order: 4 },
-    { id: 'lisa', category: 'Property savings', type: 'balance', order: 5 },
-    { id: 'isa', category: 'Investments', type: 'balance', order: 6 },
-    { id: 'sav', category: 'Cash', type: 'balance', order: 7 },
-    { id: 'cur', category: 'Cash', type: 'balance', order: 8 },
-    { id: 'debt', category: 'Debt', type: 'liability', order: 9 }
-  ];
-  const slots = L.assignAccountColours(accounts);
-  assert.equal(slots.get('btc'), 0);
-  assert.equal(slots.get('eth'), 1);
-  assert.equal(slots.get('sol'), 2);
-  assert.equal(slots.get('gold'), 3);
-  assert.equal(slots.get('cur'), 8);
-  assert.equal(slots.has('debt'), false, 'the debt is not on the blue scale');
-
-  // Every asset account gets its own distinct slot.
-  const used = Array.from(slots.values());
-  assert.equal(new Set(used).size, used.length);
-
-  // The debt keeps the reserved red and nothing else uses it.
-  const colours = accounts.map((a) => L.colourForAccount({ ...a, colourIndex: slots.get(a.id) }));
-  assert.equal(colours[colours.length - 1], L.LIABILITY_COLOUR);
-  assert.equal(colours.filter((c) => c === L.LIABILITY_COLOUR).length, 1);
+test('chart marks clear 3 to 1 against the surface they are drawn on', () => {
+  for (const theme of ['light', 'dark']) {
+    const t = L.THEME_COLOURS[theme];
+    for (const mark of ['accent', 'positive', 'negative']) {
+      for (const bg of ['surface', 'canvas']) {
+        const ratio = L.contrastRatio(t[mark], t[bg]);
+        assert.ok(ratio >= 3, `${theme}: ${mark} on ${bg} is ${ratio.toFixed(2)} to 1`);
+      }
+    }
+    // The goal ring's progress must stand out from its own track.
+    assert.ok(L.contrastRatio(t.accent, t.raised) >= 3, `${theme}: ring progress against its track`);
+  }
 });
 
-test('the five categories that touch in the stacked bar are measurably separated', () => {
-  const colours = L.CATEGORIES.filter((c) => c !== 'Debt').map((c) => L.CATEGORY_COLOURS[c]);
-  const report = L.separationReport(colours);
-  // Measured, not assumed. Nine accounts cannot all sit 15 points apart on
-  // an eleven stop single hue scale, so this records what is actually true.
-  assert.ok(report.minimumPairwiseGap >= 11, `min gap was ${report.minimumPairwiseGap}`);
-  assert.ok(report.pairs.every((p) => p.contrast > 1.2), 'adjacent segments stay distinguishable in greyscale');
-  assert.equal(new Set(colours).size, colours.length, 'no two categories share a colour');
+test('the glyph inside every category badge is readable', () => {
+  for (const theme of ['light', 'dark']) {
+    for (const [category, fill] of Object.entries(L.CATEGORY_COLOURS[theme])) {
+      const ink = L.readableTextOn(fill);
+      const ratio = L.contrastRatio(ink, fill);
+      assert.ok(ratio >= 3, `${theme}: glyph on ${category} is ${ratio.toFixed(2)} to 1`);
+    }
+  }
+});
+
+test('in dark mode every category colour clears 3 to 1 on the surface', () => {
+  // In light mode three of them do not, which the validator reports as
+  // needing relief. The allocation chart provides it with a legend that
+  // carries every value and a table view, so that is checked in the browser.
+  const t = L.THEME_COLOURS.dark;
+  for (const [category, fill] of Object.entries(L.CATEGORY_COLOURS.dark)) {
+    const ratio = L.contrastRatio(fill, t.surface);
+    assert.ok(ratio >= 3, `dark: ${category} is ${ratio.toFixed(2)} to 1 on the surface`);
+  }
+});
+
+test('every category has a colour, debt is the negative colour, and none is the accent', () => {
+  for (const theme of ['light', 'dark']) {
+    const colours = L.CATEGORY_COLOURS[theme];
+    for (const category of L.CATEGORIES) {
+      assert.ok(colours[category], `${theme}: ${category} has no colour`);
+    }
+    assert.equal(colours.Debt, L.THEME_COLOURS[theme].negative, 'debt wears the negative colour');
+    const assets = L.CATEGORIES.filter((c) => c !== 'Debt').map((c) => colours[c].toUpperCase());
+    assert.equal(new Set(assets).size, assets.length, `${theme}: two categories share a colour`);
+    const reserved = ['accent', 'positive', 'negative'].map((k) => L.THEME_COLOURS[theme][k].toUpperCase());
+    for (const hex of assets) {
+      assert.ok(!reserved.includes(hex), `${theme}: a category reuses a reserved colour ${hex}`);
+    }
+  }
+});
+
+test('the allocation bar keeps the colour checked order', () => {
+  // These five, in this order, were run through a colour vision validator
+  // in both themes. Changing either the order or a value means running it
+  // again, so the test pins both.
+  assert.deepEqual(L.ALLOCATION_ORDER,
+    ['Crypto', 'Property savings', 'Investments', 'Precious metals', 'Cash']);
+  assert.deepEqual(L.ALLOCATION_ORDER.map((c) => L.CATEGORY_COLOURS.dark[c]),
+    ['#D95926', '#199E70', '#3987E5', '#C98500', '#D55181']);
+  assert.deepEqual(L.ALLOCATION_ORDER.map((c) => L.CATEGORY_COLOURS.light[c]),
+    ['#EB6834', '#1BAF7A', '#2A78D6', '#EDA100', '#E87BA4']);
+  assert.equal(new Set(L.ALLOCATION_ORDER).size, L.CATEGORIES.length - 1, 'every asset category, once');
+});
+
+test('every category has a key for its CSS colour', () => {
+  for (const category of L.CATEGORIES) {
+    assert.match(L.categoryKey(category), /^[a-z]+$/);
+  }
+  assert.equal(L.categoryKey('Debt'), 'debt');
+  assert.equal(L.categoryKey('Something unknown'), 'cash', 'an unknown category falls back safely');
 });
 
 /* ------------------------------------------------------------------ */
@@ -1108,10 +1190,11 @@ test('a brand new install has the ten default accounts and no transactions', asy
   assert.equal(state.transactions.length, 0);
   assert.equal(L.netWorthAt(state, TODAY).netWorthPence, 0);
 
-  // Every default account has a distinct colour and the debt keeps the red.
-  const colours = state.accounts.map((a) => L.colourForAccount(a));
-  assert.equal(new Set(colours).size, colours.length, 'no two default accounts share a colour');
-  assert.equal(colours[colours.length - 1], L.LIABILITY_COLOUR);
+  // Every default account sits in a category that has a colour.
+  for (const account of state.accounts) {
+    assert.ok(L.CATEGORIES.includes(account.category), `${account.name} has no known category`);
+  }
+  assert.equal(state.accounts.find((a) => a.type === 'liability').category, 'Debt');
 
   // Charts must have something sensible to draw with no data at all.
   assert.equal(L.buildDailySeries(state, { today: TODAY }).length, 1);

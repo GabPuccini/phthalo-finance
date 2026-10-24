@@ -18,12 +18,12 @@ import zlib
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'icons')
 
-# Straight from the palette in styles.css.
-PHTHALO_700 = (0x00, 0x3D, 0x7A)
-PHTHALO_500 = (0x00, 0x68, 0xB3)
-PHTHALO_300 = (0x6B, 0xB3, 0xDE)
-PHTHALO_050 = (0xEE, 0xF6, 0xFC)
-ACCENT = (0xE0, 0xA3, 0x3D)
+# From the palette in styles.css: the light theme accent, which holds
+# white comfortably, deepening slightly toward the bottom right.
+VIOLET_TOP = (0x7A, 0x6C, 0xE6)
+VIOLET_BOTTOM = (0x55, 0x43, 0xC8)
+WHITE = (0xFF, 0xFF, 0xFF)
+NEAR_BLACK = (0x0F, 0x10, 0x13)
 
 
 def lerp(a, b, t):
@@ -52,7 +52,7 @@ def rounded_rect_contains(x, y, size, radius):
     return (dx * dx + dy * dy) ** 0.5 <= radius
 
 
-def render(size, maskable=False):
+def render(size, maskable=False, full_bleed=False):
     """Return a list of rows, each a list of (r, g, b, a) tuples."""
     # The chart motif, in fractions of the canvas.
     if maskable:
@@ -79,10 +79,11 @@ def render(size, maskable=False):
         for x in range(size):
             px = x + 0.5
 
-            # Background: full bleed for maskable, rounded square otherwise.
-            if maskable or rounded_rect_contains(px, py, size, radius):
+            # Background: full bleed for maskable and Apple icons, which the
+            # system rounds itself, and a rounded square otherwise.
+            if maskable or full_bleed or rounded_rect_contains(px, py, size, radius):
                 t = (px + py) / (2.0 * size)
-                r, g, b = lerp(PHTHALO_700, PHTHALO_500, min(1.0, max(0.0, t)))
+                r, g, b = lerp(VIOLET_TOP, VIOLET_BOTTOM, min(1.0, max(0.0, t)))
                 a = 255
             else:
                 r, g, b, a = 0, 0, 0, 0
@@ -93,11 +94,11 @@ def render(size, maskable=False):
                                            points[i + 1][0], points[i + 1][1])
                            for i in range(len(points) - 1))
                 if best <= half:
-                    r, g, b = PHTHALO_050
+                    r, g, b = WHITE
                 # The marker at the end of the line.
                 dd = ((px - dot_c[0]) ** 2 + (py - dot_c[1]) ** 2) ** 0.5
                 if dd <= dot_r:
-                    r, g, b = ACCENT if dd > dot_r * 0.55 else PHTHALO_050
+                    r, g, b = WHITE if dd > dot_r * 0.5 else NEAR_BLACK
 
             row.append((r, g, b, a))
         rows.append(row)
@@ -158,15 +159,19 @@ def main():
     print('Rendering the standard icon...')
     big = render(512 * factor, maskable=False)
 
-    for size in (512, 192, 180, 32):
+    for size in (512, 192, 32):
         scaled = downsample(big, (512 * factor) // size) if (512 * factor) % size == 0 else None
         if scaled is None:
             # Render directly when the factor does not divide cleanly.
             scaled = downsample(render(size * factor, maskable=False), factor)
-        name = {512: 'icon-512.png', 192: 'icon-192.png',
-                180: 'apple-touch-icon.png', 32: 'favicon-32.png'}[size]
+        name = {512: 'icon-512.png', 192: 'icon-192.png', 32: 'favicon-32.png'}[size]
         written = write_png(os.path.join(OUT_DIR, name), scaled)
         print(f'  {name}: {size}x{size}, {written} bytes')
+
+    print('Rendering the Apple icon, full bleed...')
+    apple = downsample(render(180 * factor, full_bleed=True), factor)
+    written = write_png(os.path.join(OUT_DIR, 'apple-touch-icon.png'), apple)
+    print(f'  apple-touch-icon.png: 180x180, {written} bytes')
 
     print('Rendering the maskable icon...')
     mask_big = render(512 * factor, maskable=True)

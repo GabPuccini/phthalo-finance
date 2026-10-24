@@ -11,7 +11,6 @@
 import {
   UNIT_SCALE,
   addMonths,
-  assignAccountColours,
   daysInMonth,
   normaliseState,
   startOfMonth,
@@ -72,9 +71,12 @@ export const DEFAULT_ACCOUNT_TEMPLATES = [
   }
 ];
 
-/** The accounts a brand new install starts with. No transactions. */
+/**
+ * The accounts a brand new install starts with. No transactions.
+ * An account's colour comes from its category, so nothing is assigned here.
+ */
 export function defaultAccounts() {
-  const accounts = DEFAULT_ACCOUNT_TEMPLATES.map((template, i) => ({
+  return DEFAULT_ACCOUNT_TEMPLATES.map((template, i) => ({
     order: i,
     archived: false,
     goal: null,
@@ -84,11 +86,6 @@ export function defaultAccounts() {
     ...(template.type === 'quantity'
       ? { priceUpdatedAt: null, priceSource: 'manual' }
       : {})
-  }));
-  const slots = assignAccountColours(accounts);
-  return accounts.map((a) => ({
-    ...a,
-    colourIndex: slots.has(a.id) ? slots.get(a.id) : a.colourIndex
   }));
 }
 

@@ -3,13 +3,19 @@
  *
  * All of the DOM work. Every number on screen comes from a pure function
  * in logic.js; nothing is calculated here.
+ *
+ * Screens: Home (net worth and the accounts), Insights (the charts),
+ * Activity (every entry), Settings, and the account screen, which opens
+ * over the others with its own back button, as a native app would.
  */
 
 import {
   CATEGORIES,
   VISUAL_LIBRARY,
+  accountSeries,
   activeAccounts,
   addDays,
+  averageMonthlyRepayment,
   balancesAt,
   checkWithdrawal,
   dateToISO,
@@ -22,18 +28,29 @@ import {
   parseMoneyToPence,
   parseUnitsToE8,
   projectPayoff,
-  averageMonthlyRepayment,
   quantityValuePence,
   sortedTransactions,
   transactionsToCsv,
-  unitsForPence,
-  assignAccountColours
+  unitsForPence
 } from './logic.js';
 
-import { renderVisual, esc, seriesVar } from './charts.js';
+import {
+  badge,
+  esc,
+  heroBlock,
+  lineChart,
+  longDate,
+  renderVisual,
+  shortDate,
+  statusChip
+} from './charts.js';
+import { icon } from './icons.js';
 import { demoState, emptyStateWithDefaults } from './seed.js';
 import * as store from './storage.js';
 import { fetchPrices, describeResult } from './prices.js';
+
+// Tells the repair check in index.html that this release's code is running.
+document.documentElement.setAttribute('data-app', 'ready');
 
 /* ------------------------------------------------------------------ */
 /* Global safety net, installed before anything else can run           */
@@ -66,30 +83,39 @@ window.addEventListener('error', (event) => {
 
 window.addEventListener('unhandledrejection', (event) => {
   const reason = event.reason;
-  showRecovery('A background task failed unexpectedly.',
-    reason && reason.stack ? reason.stack : String(reason));
+  showRecovery('A background task failed unexpectedly.', reason && reason.stack ? reason.stack : String(reason));
 });
 
 /* ------------------------------------------------------------------ */
 /* Application state                                                   */
 /* ------------------------------------------------------------------ */
 
+const TAB_VIEWS = ['home', 'insights', 'activity', 'settings'];
+
 const app = {
   state: null,
   view: 'home',
+  previousView: 'home',
+  accountId: null,
+  accountTab: 'overview',
+  showArchived: false,
   banners: [],
   bannerSeq: 0,
   saveBlocked: false,
   lastWidth: 0,
-  pendingConfirm: null
+  pendingConfirm: null,
+  sheetOpen: false
 };
 
 const todayISO = () => dateToISO(new Date());
-
-function byId(id) { return document.getElementById(id); }
+const byId = (id) => document.getElementById(id);
 
 function nextId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function accountById(id) {
+  return app.state.accounts.find((a) => a.id === id) || null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -108,23 +134,27 @@ function removeBanner(id) {
   renderBanners();
 }
 
+function dropBanners(key) {
+  app.banners = app.banners.filter((b) => b.key !== key);
+}
+
 function renderBanners() {
   const host = byId('banners');
   if (!host) return;
+  const glyph = { error: icon.alert, success: icon.check, info: icon.info };
   host.innerHTML = app.banners.map((banner) => `
     <div class="banner is-${esc(banner.kind)}" data-banner="${esc(banner.id)}">
-      <div>
-        <p class="banner-title">${esc(banner.title)}</p>
-        <p class="banner-body">${esc(banner.body)}</p>
-      </div>
-      <div class="banner-actions">
+      <span class="banner-icon">${glyph[banner.kind] || icon.info}</span>
+      <p class="banner-title">${esc(banner.title)}</p>
+      <p class="banner-body">${esc(banner.body)}</p>
+      ${banner.actions.length || banner.dismissible ? `<div class="banner-actions">
         ${banner.actions.map((action) => `
           <button type="button" class="button is-small${action.primary ? ' is-primary' : ''}"
                   data-action="${esc(action.action)}"
                   ${action.arg ? `data-arg="${esc(action.arg)}"` : ''}>${esc(action.label)}</button>`).join('')}
         ${banner.dismissible ? `<button type="button" class="button is-small is-quiet"
             data-action="dismiss-banner" data-arg="${esc(banner.id)}">Dismiss</button>` : ''}
-      </div>
+      </div>` : ''}
     </div>`).join('');
 }
 
@@ -191,8 +221,8 @@ function boot() {
       kind: 'info',
       key: 'welcome',
       title: 'Welcome. Everything stays on this device',
-      body: 'Nothing is sent anywhere and there is no account to create. Tap "Load demo data" '
-        + 'on the Data tab to see every chart working, or start adding your own money straight away.'
+      body: 'Nothing is sent anywhere and there is no account to create. Load the demo data in '
+        + 'Settings to see every chart working, or tap the plus button to add your own money.'
     });
   } else if (loaded.status === store.STATUS.DISABLED) {
     app.state = emptyStateWithDefaults(today);
@@ -230,21 +260,26 @@ function boot() {
     }
   }
 
-  // A phone specific warning that is genuinely worth showing once.
   if (!app.state.settings.notices.iosStorage && isIosSafariNotInstalled()) {
     addBanner({
       kind: 'info',
       key: 'ios-storage',
       title: 'Add this to your home screen to keep your data',
       body: 'iOS Safari can clear the storage of a website you have not opened for a few weeks. '
-        + 'Adding Phthalo Finance to your home screen stops that happening. Tap Share, then '
+        + 'Adding Phthalo to your home screen stops that happening. Tap Share, then '
         + '"Add to Home Screen".',
       actions: [{ label: 'Got it', action: 'dismiss-ios-notice', primary: true }],
       dismissible: false
     });
   }
 
+  // A reload always starts on Home, never on a stale account address.
+  if (window.location.hash) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+
   checkBackupReminder();
+  applyTheme(app.state.settings.theme || 'system');
   render();
   registerServiceWorker();
   watchSystemTheme();
@@ -261,14 +296,13 @@ function isIosSafariNotInstalled() {
 
 function checkBackupReminder() {
   const days = store.daysSinceExport(app.state, todayISO());
-  const hasData = app.state.transactions.length > 0;
-  if (!hasData) return;
+  if (!app.state.transactions.length) return;
   if (days === null || days >= 30) {
     addBanner({
       kind: 'info',
       key: 'backup-reminder',
       title: days === null ? 'You have never exported a backup' : `Your last backup was ${days} days ago`,
-      body: 'A backup is a single file you can keep anywhere. It takes a second and it is the only '
+      body: 'A backup is a single file you can keep anywhere. It takes a second, and it is the only '
         + 'thing standing between a cleared browser and starting again.',
       actions: [{ label: 'Export now', action: 'export-json', primary: true }]
     });
@@ -281,69 +315,163 @@ function checkBackupReminder() {
 
 function render() {
   try {
-    for (const view of ['home', 'accounts', 'activity', 'data']) {
+    const onAccount = app.view === 'account' && accountById(app.accountId);
+    if (app.view === 'account' && !onAccount) app.view = TAB_VIEWS.includes(app.previousView) ? app.previousView : 'home';
+
+    for (const view of [...TAB_VIEWS, 'account']) {
       const el = byId(`view-${view}`);
       if (el) el.hidden = view !== app.view;
     }
+    document.body.classList.toggle('is-detail', app.view === 'account');
     document.querySelectorAll('.tabbar button[data-view]').forEach((button) => {
       if (button.dataset.view === app.view) button.setAttribute('aria-current', 'page');
       else button.removeAttribute('aria-current');
     });
+    // The add button lives where adding makes sense, and never on an archived account.
+    const fab = byId('fab');
+    // On an account's overview the Add money and Withdraw buttons already
+    // sit in view, so the floating button would only cover them.
+    const viewing = app.view === 'account' ? accountById(app.accountId) : null;
+    fab.hidden = !['home', 'activity', 'account'].includes(app.view)
+      || (viewing && (viewing.archived || app.accountTab === 'overview'));
 
     if (app.view === 'home') renderHome();
-    else if (app.view === 'accounts') renderAccounts();
+    else if (app.view === 'insights') renderInsights();
     else if (app.view === 'activity') renderActivity();
-    else if (app.view === 'data') renderData();
+    else if (app.view === 'settings') renderSettings();
+    else if (app.view === 'account') renderAccount();
+    app.lastWidth = window.innerWidth;
   } catch (error) {
     showRecovery('The screen could not be drawn.', error && error.stack ? error.stack : String(error));
   }
 }
 
+function contentWidth(el) {
+  return Math.max(240, Math.floor(el.clientWidth || (window.innerWidth - 32)));
+}
+
+/* ---------------- Home ---------------- */
+
+function accountCard(account, entry, today) {
+  const isDebt = account.type === 'liability';
+  const value = isDebt ? -entry.valuePence : entry.valuePence;
+  let meta;
+  if (account.type === 'quantity') {
+    // Units only. The price is one tap away on the account screen.
+    meta = `${formatUnits(entry.unitsE8, 6)} ${account.unit || 'units'}`;
+  } else if (isDebt) {
+    meta = account.interestRatePct ? `${account.interestRatePct}% interest` : 'Debt';
+  } else {
+    meta = account.note || account.category;
+  }
+
+  let progress = '';
+  const p = account.goal ? goalProgress(account, entry.valuePence, today) : null;
+  if (p) {
+    const pct = Math.round(p.percent);
+    const left = p.isDebt ? `${pct}% paid off` : `${pct}%`;
+    const right = p.reached ? 'Target reached'
+      : `${formatMoney(p.remainingPence, { showPence: false })} to go`;
+    progress = `
+      <span class="account-progress">
+        <span class="progress" role="img" aria-label="${pct} percent of the goal"><span style="width:${Math.max(p.percent, p.percent > 0 ? 2 : 0).toFixed(1)}%"></span></span>
+        <span class="progress-row"><span>${esc(left)}</span><span>${esc(right)}</span></span>
+      </span>`;
+  }
+
+  return `
+    <li>
+      <button type="button" class="account-card${account.archived ? ' is-archived' : ''}"
+              data-action="open-account" data-arg="${esc(account.id)}">
+        ${account.archived ? `<span class="badge badge-archived" aria-hidden="true">${icon.archive}</span>` : badge(isDebt ? 'Debt' : account.category)}
+        <span class="account-main">
+          <span class="account-name">${esc(account.name)}</span>
+          <span class="account-meta">${esc(account.archived ? 'Archived' : meta)}</span>
+        </span>
+        <span class="account-value${value < 0 ? ' is-negative' : ''}">${esc(account.archived ? '' : formatMoney(value))}</span>
+        ${account.archived ? '' : progress}
+      </button>
+    </li>`;
+}
+
 function renderHome() {
   const host = byId('view-home');
-  const enabled = app.state.visuals.filter((v) => v.enabled);
+  const today = todayISO();
+  const balances = balancesAt(app.state, today);
+  const accounts = activeAccounts(app.state);
+  const assets = accounts.filter((a) => a.type !== 'liability');
+  const debts = accounts.filter((a) => a.type === 'liability');
+  const archived = app.state.accounts.filter((a) => a.archived);
+  const totals = netWorthAt(app.state, today);
+  const entryFor = (a) => balances.get(a.id) || { valuePence: 0, unitsE8: 0, pricePence: 0 };
+
+  host.innerHTML = `
+    <div class="home-layout">
+      <div id="hero-slot"></div>
+      <div>
+        <div class="section-head">
+          <h2 class="section-title">Assets</h2>
+          <span class="section-total">${esc(formatMoney(totals.assetsPence))}</span>
+        </div>
+        ${assets.length
+    ? `<ul class="account-list">${assets.map((a) => accountCard(a, entryFor(a), today)).join('')}</ul>`
+    : `<div class="empty"><p class="empty-title">No accounts yet</p>
+         <p class="empty-body">Add an account for each thing you want to track.</p></div>`}
+        ${debts.length ? `
+          <div class="section-head">
+            <h2 class="section-title">Owed</h2>
+            <span class="section-total is-negative">${esc(formatMoney(-totals.liabilitiesPence))}</span>
+          </div>
+          <ul class="account-list">${debts.map((a) => accountCard(a, entryFor(a), today)).join('')}</ul>` : ''}
+        <div class="section-head">
+          <button type="button" class="text-button" data-action="add-account">${icon.plus}Add an account</button>
+          ${archived.length ? `<button type="button" class="text-button" data-action="toggle-archived-list">
+            ${app.showArchived ? 'Hide' : 'Show'} archived (${archived.length})</button>` : ''}
+        </div>
+        ${archived.length && app.showArchived
+    ? `<ul class="account-list">${archived.map((a) => accountCard(a, entryFor(a), today)).join('')}</ul>` : ''}
+      </div>
+    </div>`;
+
+  const slot = byId('hero-slot');
+  slot.innerHTML = heroBlock({ state: app.state, today, width: contentWidth(slot) });
+  attachScrub(slot.querySelector('[data-scrub]'), slot.querySelector('[data-readout]'));
+}
+
+/* ---------------- Insights ---------------- */
+
+function renderInsights() {
+  const host = byId('view-insights');
+  const enabled = app.state.visuals.filter((v) => v.enabled && VISUAL_LIBRARY[v.id]);
 
   if (!enabled.length) {
     host.innerHTML = `
-      <div class="section-head"><h2 class="section-title">Home</h2>
-        <button type="button" class="button is-small" data-action="open-gallery">Add a visual</button></div>
-      <p class="empty-note">Every visual is switched off. Open the gallery to put some back.</p>`;
+      <div class="empty" style="margin-top:8px">
+        <p class="empty-title">Every chart is switched off</p>
+        <p class="empty-body">Open the list of charts to put some back.</p>
+        <button type="button" class="button is-primary" data-action="open-gallery">Choose charts</button>
+      </div>`;
     return;
   }
 
   host.innerHTML = `
     <div class="visual-list">
       ${enabled.map((visual, index) => {
-    const meta = VISUAL_LIBRARY[visual.id] || { name: visual.id };
+    const meta = VISUAL_LIBRARY[visual.id];
     return `
-        <article class="card${visual.id === 'netWorth' ? ' is-wide' : ''}" data-visual-id="${esc(visual.id)}">
+        <article class="card" data-visual-id="${esc(visual.id)}">
           <div class="card-head">
             <div>
               <h2 class="card-title">${esc(meta.name)}</h2>
               <p class="card-subtitle">${esc(meta.name)}</p>
             </div>
             <div class="card-tools">
-              <button type="button" class="button is-icon is-quiet" data-action="move-visual"
-                      data-arg="${esc(visual.id)}" data-dir="up" ${index === 0 ? 'disabled' : ''}
-                      aria-label="Move ${esc(meta.name)} up">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                     stroke-width="2" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"
-                     stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
-              <button type="button" class="button is-icon is-quiet" data-action="move-visual"
-                      data-arg="${esc(visual.id)}" data-dir="down"
-                      ${index === enabled.length - 1 ? 'disabled' : ''}
-                      aria-label="Move ${esc(meta.name)} down">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                     stroke-width="2" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"
-                     stroke-linecap="round" stroke-linejoin="round"/></svg>
-              </button>
-              <button type="button" class="button is-icon is-quiet" data-action="hide-visual"
-                      data-arg="${esc(visual.id)}" aria-label="Remove ${esc(meta.name)} from the home screen">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                     stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"
-                     stroke-linecap="round"/></svg>
-              </button>
+              <button type="button" class="icon-button" data-action="move-visual" data-arg="${esc(visual.id)}"
+                      data-dir="up" ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(meta.name)} up">${icon.up}</button>
+              <button type="button" class="icon-button" data-action="move-visual" data-arg="${esc(visual.id)}"
+                      data-dir="down" ${index === enabled.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(meta.name)} down">${icon.down}</button>
+              <button type="button" class="icon-button" data-action="hide-visual" data-arg="${esc(visual.id)}"
+                      aria-label="Remove ${esc(meta.name)}">${icon.close}</button>
             </div>
           </div>
           <div class="card-body"></div>
@@ -351,9 +479,7 @@ function renderHome() {
   }).join('')}
     </div>
     <div class="section-head">
-      <button type="button" class="button" data-action="open-gallery" style="width:100%">
-        Add or remove visuals
-      </button>
+      <button type="button" class="button is-block" data-action="open-gallery">${icon.sliders}Add or remove charts</button>
     </div>`;
 
   // Second pass: measure each card and draw at real pixel size.
@@ -361,76 +487,36 @@ function renderHome() {
   host.querySelectorAll('[data-visual-id]').forEach((card) => {
     const id = card.dataset.visualId;
     const body = card.querySelector('.card-body');
-    const width = Math.max(240, Math.floor(body.clientWidth || card.clientWidth - 28));
-    const result = renderVisual(id, { state: app.state, today, width });
-    const titleEl = card.querySelector('.card-title');
-    const subtitleEl = card.querySelector('.card-subtitle');
-    titleEl.textContent = result.title;
-    subtitleEl.textContent = (VISUAL_LIBRARY[id] || {}).name || id;
+    const result = renderVisual(id, { state: app.state, today, width: contentWidth(body) });
+    card.querySelector('.card-title').textContent = result.title;
     body.innerHTML = result.body;
   });
-  app.lastWidth = window.innerWidth;
 }
 
-function renderAccounts() {
-  const host = byId('view-accounts');
-  const today = todayISO();
-  const balances = balancesAt(app.state, today);
-  const accounts = activeAccounts(app.state);
-  const archived = app.state.accounts.filter((a) => a.archived);
-  const totals = netWorthAt(app.state, today);
+/* ---------------- Activity ---------------- */
 
-  const rowFor = (account) => {
-    const entry = balances.get(account.id) || { valuePence: 0, unitsE8: 0, pricePence: 0 };
-    const isDebt = account.type === 'liability';
-    const meta = [account.category];
-    if (account.type === 'quantity') {
-      meta.push(`${formatUnits(entry.unitsE8, 6)} ${account.unit || 'units'} at ${formatMoney(entry.pricePence)}`);
-    }
-    if (account.goal) meta.push('has a goal');
-    return `
-      <li>
-        <button type="button" class="row" data-action="open-account" data-arg="${esc(account.id)}">
-          <span class="row-stripe" style="background:${isDebt ? 'var(--negative)' : seriesVar(account.colourIndex)}"></span>
-          <span class="row-main">
-            <span class="row-name">${esc(account.name)}</span>
-            <span class="row-meta">${esc(meta.join(' · '))}</span>
-          </span>
-          <span class="row-value${isDebt ? ' is-negative' : ''}">
-            ${esc(formatMoney(isDebt ? -entry.valuePence : entry.valuePence))}
-          </span>
-        </button>
-      </li>`;
-  };
-
-  host.innerHTML = `
-    <div class="section-head">
-      <h2 class="section-title">Accounts</h2>
-      <button type="button" class="button is-small is-primary" data-action="add-account">Add account</button>
-    </div>
-    <div class="card" style="margin-bottom:14px">
-      <p class="hero-label">Net worth</p>
-      <p class="hero-value">${esc(formatMoney(totals.netWorthPence))}</p>
-      <p class="card-subtitle">${esc(formatMoney(totals.assetsPence))} in assets less
-        ${esc(formatMoney(totals.liabilitiesPence))} owed</p>
-    </div>
-    ${accounts.length
-    ? `<ul class="row-list">${accounts.map((a) => rowFor(a)).join('')}</ul>
-       <p class="section-hint" style="margin-top:10px">Open an account to reorder, archive,
-         rename or delete it.</p>`
-    : '<p class="empty-note">No accounts yet. Add one to get started.</p>'}
-    ${archived.length ? `
-      <div class="section-head"><h3 class="section-title">Archived</h3></div>
-      <p class="section-hint">Archived accounts keep their history but are left out of your totals.</p>
-      <ul class="row-list">
-        ${archived.map((account) => `
-          <li><button type="button" class="row is-archived" data-action="open-account" data-arg="${esc(account.id)}">
-            <span class="row-stripe" style="background:var(--muted)"></span>
-            <span class="row-main"><span class="row-name">${esc(account.name)}</span>
-              <span class="row-meta">Archived</span></span>
-            <span class="row-value">-</span>
-          </button></li>`).join('')}
-      </ul>` : ''}`;
+function recordRow(tx, account, { showAccount = true } = {}) {
+  const out = tx.direction === 'out';
+  const isDebt = account && account.type === 'liability';
+  // For a debt, money in means borrowing more, which is shown as money out.
+  const label = !account ? 'Deleted account' : showAccount ? account.name : longDate(tx.date);
+  const subParts = [];
+  if (showAccount && tx.note) subParts.push(tx.note);
+  if (!showAccount) subParts.push(tx.note || (out ? (isDebt ? 'Payment' : 'Money out') : (isDebt ? 'Added to debt' : 'Money in')));
+  if (tx.unitsE8) subParts.push(`${formatUnits(tx.unitsE8, 6)} ${account && account.unit ? account.unit : 'units'}`);
+  const sub = subParts.join(' · ') || (out ? 'Money out' : 'Money in');
+  const lead = showAccount
+    ? (account ? badge(isDebt ? 'Debt' : account.category, 'small') : `<span class="badge is-small badge-archived">${icon.archive}</span>`)
+    : '';
+  return `
+    <button type="button" class="list-row${showAccount ? '' : ' no-lead'}" data-action="edit-tx" data-arg="${esc(tx.id)}">
+      ${lead}
+      <span class="row-main">
+        <span class="row-title">${esc(label)}</span>
+        <span class="row-sub">${esc(sub)}</span>
+      </span>
+      <span class="row-end"><span class="row-amount ${out ? 'is-out' : 'is-in'}">${esc(formatMoney(out ? -tx.amountPence : tx.amountPence, { showSign: true }))}</span></span>
+    </button>`;
 }
 
 function renderActivity() {
@@ -440,120 +526,405 @@ function renderActivity() {
 
   if (!txs.length) {
     host.innerHTML = `
-      <div class="section-head"><h2 class="section-title">Activity</h2></div>
-      <p class="empty-note">Nothing recorded yet. Open an account and add some money.</p>`;
+      <div class="empty" style="margin-top:8px">
+        <p class="empty-title">Nothing recorded yet</p>
+        <p class="empty-body">Every entry you add, on any account, appears here newest first.</p>
+        <button type="button" class="button is-primary" data-action="fab">${icon.plus}Add an entry</button>
+      </div>`;
     return;
   }
 
+  const shown = txs.slice(0, 400);
   const groups = new Map();
-  for (const tx of txs.slice(0, 400)) {
+  for (const tx of shown) {
     if (!groups.has(tx.date)) groups.set(tx.date, []);
     groups.get(tx.date).push(tx);
   }
 
   host.innerHTML = `
-    <div class="section-head">
-      <h2 class="section-title">Activity</h2>
-      <span class="card-subtitle">${txs.length} entr${txs.length === 1 ? 'y' : 'ies'}</span>
-    </div>
-    ${txs.length > 400 ? '<p class="section-hint">Showing the most recent 400 entries.</p>' : ''}
+    ${txs.length > 400 ? '<p class="page-intro">Showing the most recent 400 entries.</p>' : ''}
     ${Array.from(groups.entries()).map(([date, list]) => `
-      <div class="section-head" style="margin:14px 0 8px">
-        <h3 class="section-title" style="font-size:13.5px;color:var(--muted)">${esc(longDate(date))}</h3>
-      </div>
-      <ul class="row-list">
-        ${list.map((tx) => {
-    const account = accounts.get(tx.accountId);
-    const out = tx.direction === 'out';
-    const detail = [];
-    if (tx.unitsE8) detail.push(`${formatUnits(tx.unitsE8, 6)} ${account && account.unit ? account.unit : 'units'}`);
-    if (tx.note) detail.push(tx.note);
-    return `
-          <li><button type="button" class="row" data-action="edit-tx" data-arg="${esc(tx.id)}">
-            <span class="row-stripe" style="background:${account && account.type === 'liability'
-      ? 'var(--negative)' : seriesVar(account ? account.colourIndex : 5)}"></span>
-            <span class="row-main">
-              <span class="row-name">${esc(account ? account.name : 'Deleted account')}</span>
-              <span class="row-meta">${esc(detail.join(' · ') || (out ? 'Money out' : 'Money in'))}</span>
-            </span>
-            <span class="row-value${out ? ' is-negative' : ''}">
-              ${esc(formatMoney(out ? -tx.amountPence : tx.amountPence, { showSign: true }))}
-            </span>
-          </button></li>`;
-  }).join('')}
-      </ul>`).join('')}`;
+      <h2 class="date-head">${esc(longDate(date))}</h2>
+      <div class="list-group">${list.map((tx) => recordRow(tx, accounts.get(tx.accountId))).join('')}</div>`).join('')}`;
 }
 
-function renderData() {
-  const host = byId('view-data');
+/* ---------------- Settings ---------------- */
+
+function settingsRow({ action, arg, glyph, title, sub, danger = false }) {
+  return `
+    <button type="button" class="list-row${danger ? ' row-danger' : ''}" data-action="${esc(action)}"${arg ? ` data-arg="${esc(arg)}"` : ''}>
+      <span class="row-icon">${glyph}</span>
+      <span class="row-main">
+        <span class="row-title">${esc(title)}</span>
+        ${sub ? `<span class="row-sub">${esc(sub)}</span>` : ''}
+      </span>
+      <span class="row-chevron">${icon.chevron}</span>
+    </button>`;
+}
+
+function renderSettings() {
+  const host = byId('view-settings');
   const days = store.daysSinceExport(app.state, todayISO());
   const theme = app.state.settings.theme || 'system';
-  const counts = {
-    accounts: app.state.accounts.length,
-    transactions: app.state.transactions.length
-  };
+  const archived = app.state.accounts.filter((a) => a.archived);
+  const exported = days === null ? 'Never exported'
+    : days === 0 ? 'Last exported today' : `Last exported ${days} day${days === 1 ? '' : 's'} ago`;
 
   host.innerHTML = `
-    <div class="section-head"><h2 class="section-title">Your data</h2></div>
-    <div class="card" style="display:grid;gap:12px">
-      <p class="card-subtitle">${counts.accounts} accounts and ${counts.transactions} entries are stored
-        in this browser only. ${days === null ? 'You have never exported a backup.'
-    : `Last exported ${days === 0 ? 'today' : `${days} day${days === 1 ? '' : 's'} ago`}.`}</p>
-      <div class="banner-actions">
-        <button type="button" class="button is-primary" data-action="export-json">Export to JSON</button>
-        <button type="button" class="button" data-action="export-csv">Export to CSV</button>
-        <button type="button" class="button" data-action="import-json">Import from JSON</button>
-      </div>
-      <p class="field-hint">The JSON file is a complete backup you can import again later.
-        The CSV file lists every transaction for opening in a spreadsheet.</p>
+    <div class="section-head" style="margin-top:6px"><h2 class="section-title">Backup</h2></div>
+    <div class="list-group">
+      ${settingsRow({ action: 'export-json', glyph: icon.download, title: 'Export to JSON', sub: `A complete backup. ${exported}.` })}
+      ${settingsRow({ action: 'export-csv', glyph: icon.table, title: 'Export to CSV', sub: 'Every entry, for Excel or Numbers' })}
+      ${settingsRow({ action: 'import-json', glyph: icon.upload, title: 'Import from JSON', sub: 'Replaces what is here with a backup' })}
     </div>
 
-    <div class="section-head"><h3 class="section-title">Appearance</h3></div>
+    <div class="section-head"><h2 class="section-title">Appearance</h2></div>
     <div class="card">
-      <div class="field">
-        <label for="theme-select">Theme</label>
-        <select class="select" id="theme-select" data-action="set-theme">
-          <option value="system"${theme === 'system' ? ' selected' : ''}>Follow the system</option>
-          <option value="dark"${theme === 'dark' ? ' selected' : ''}>Always dark</option>
-          <option value="light"${theme === 'light' ? ' selected' : ''}>Always light</option>
-        </select>
-        <p class="field-hint">Dark is used when the system has no preference.</p>
+      <p class="field-label" id="theme-label" style="margin-bottom:8px">Theme</p>
+      <div class="segmented" role="group" aria-labelledby="theme-label">
+        ${['system', 'dark', 'light'].map((value) => `
+          <button type="button" data-action="set-theme" data-value="${value}" aria-pressed="${theme === value}">
+            ${{ system: 'Automatic', dark: 'Dark', light: 'Light' }[value]}</button>`).join('')}
       </div>
+      <p class="field-hint" style="margin-top:8px">Automatic follows your phone, and uses dark when it has no preference.</p>
     </div>
 
-    <div class="section-head"><h3 class="section-title">Sample data</h3></div>
-    <div class="card" style="display:grid;gap:12px">
-      <p class="card-subtitle">The demo fills the app with twelve months of realistic activity so you
-        can see every chart working. It replaces whatever is there now.</p>
-      <div class="banner-actions">
-        <button type="button" class="button" data-action="load-demo">Load demo data</button>
-        <button type="button" class="button is-danger" data-action="clear-all">Clear all data</button>
-      </div>
+    <div class="section-head"><h2 class="section-title">Accounts and prices</h2></div>
+    <div class="list-group">
+      ${settingsRow({ action: 'add-account', glyph: icon.plus, title: 'Add an account' })}
+      ${settingsRow({ action: 'refresh-prices', glyph: icon.refresh, title: 'Refresh prices now', sub: 'Keeps your typed price if it fails' })}
+      ${archived.map((a) => settingsRow({ action: 'open-account', arg: a.id, glyph: icon.archive, title: a.name, sub: 'Archived' })).join('')}
     </div>
 
-    <div class="section-head"><h3 class="section-title">Prices</h3></div>
-    <div class="card" style="display:grid;gap:12px">
-      <p class="card-subtitle">Unit prices are yours to type in. The refresh button tries a free public
-        price service and quietly keeps your last manual price if anything at all goes wrong.</p>
-      <div class="banner-actions">
-        <button type="button" class="button" data-action="refresh-prices">Refresh prices now</button>
-      </div>
+    <div class="section-head"><h2 class="section-title">Sample data</h2></div>
+    <div class="list-group">
+      ${settingsRow({ action: 'load-demo', glyph: icon.sparkle, title: 'Load demo data', sub: 'Twelve months of made up activity' })}
+      ${settingsRow({ action: 'clear-all', glyph: icon.trash, title: 'Clear all data', danger: true })}
     </div>
 
-    <div class="section-head"><h3 class="section-title">About</h3></div>
+    <div class="section-head"><h2 class="section-title">About</h2></div>
     <div class="card">
-      <p class="card-subtitle">Phthalo Finance stores everything in this browser under a single key.
-        Nothing is uploaded and there is no account. If you clear your browser data, or iOS clears it
-        for you, an exported backup is the only way back, so export one now and then.</p>
+      <p class="muted" style="font-size:14.5px">Phthalo stores everything in this browser and nowhere else.
+        Nothing is uploaded and there is no account. If the browser data is cleared, an exported backup
+        is the only way back, so export one now and then.
+        ${app.state.accounts.length} accounts and ${app.state.transactions.length} entries are stored here.</p>
     </div>`;
 }
 
-function longDate(iso) {
-  const names = ['January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'];
-  const parts = String(iso).split('-');
-  return `${Number(parts[2])} ${names[Number(parts[1]) - 1]} ${parts[0]}`;
+/* ---------------- Account screen ---------------- */
+
+function ring(fraction) {
+  const r = 52;
+  const c = 2 * Math.PI * r;
+  const f = Math.max(0, Math.min(1, fraction));
+  return `<svg viewBox="0 0 120 120" aria-hidden="true">
+    <circle class="ring-track" cx="60" cy="60" r="${r}" stroke-width="10"/>
+    ${f > 0 ? `<circle class="ring-fill" cx="60" cy="60" r="${r}" stroke-width="10"
+      stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${(c * (1 - f)).toFixed(2)}"/>` : ''}
+  </svg>`;
 }
+
+function goalOverview(account, entry, today) {
+  const p = goalProgress(account, entry.valuePence, today);
+  const isDebt = p.isDebt;
+  const pct = p.exceeded ? Math.round(p.rawPercent) : Math.round(p.percent);
+
+  let countdown;
+  if (p.reached) countdown = `<span class="target-countdown is-positive">${p.exceeded ? 'Target passed' : 'Target reached'}</span>`;
+  else if (p.overdue) countdown = `<span class="target-countdown is-negative">Passed ${esc(describeTimeRemaining(p.timeRemaining))}</span>`;
+  else if (p.timeRemaining) countdown = `<span class="target-countdown">${esc(describeTimeRemaining(p.timeRemaining))} to go</span>`;
+  else countdown = '';
+
+  let rates = '';
+  if (!p.reached && p.rates.achievable) {
+    rates = `<div class="stat-trio">
+      <div><p class="stat-label">Daily</p><p class="stat-mid">${esc(formatMoney(p.rates.perDayPence))}</p></div>
+      <div><p class="stat-label">Weekly</p><p class="stat-mid">${esc(formatMoney(p.rates.perWeekPence))}</p></div>
+      <div><p class="stat-label">Monthly</p><p class="stat-mid">${esc(formatMoney(p.rates.perMonthPence))}</p></div>
+    </div>`;
+  } else if (!p.reached && !p.rates.achievable) {
+    rates = '<p class="muted" style="margin-top:16px;font-size:14.5px">The target date has passed, so no saving rate arrives on time. Edit the goal to set a new date.</p>';
+  }
+
+  let pace = '';
+  if (p.pace && !p.reached && !p.overdue) {
+    const diff = formatMoney(Math.abs(p.pace.differencePence));
+    const words = p.pace.status === 'ahead' ? `${diff} ahead of a straight line to the target`
+      : p.pace.status === 'behind' ? `${diff} behind a straight line to the target`
+        : 'Level with a straight line to the target';
+    pace = `<div style="margin-top:18px;display:grid;justify-items:center;gap:6px">
+      ${statusChip(p.pace.status)}<p class="muted" style="font-size:13.5px">${esc(words)}</p></div>`;
+  }
+
+  const bigLabel = isDebt ? 'Owed' : 'Saved';
+  const pair = isDebt
+    ? [['Paid off', formatMoney(Math.max(0, p.startPence - p.currentPence))], ['Started at', formatMoney(p.startPence)]]
+    : [['Remaining', formatMoney(p.remainingPence)], ['Goal', formatMoney(p.targetPence)]];
+
+  return `
+    <div class="goal-hero">
+      <div class="ring" role="img" aria-label="${pct} percent of the goal reached">
+        ${ring(p.fraction)}
+        <div class="ring-centre">
+          <span class="ring-percent">${pct}%</span>
+          <span class="ring-caption">${isDebt ? 'paid off' : 'of goal'}</span>
+        </div>
+      </div>
+      <p class="stat-label" style="margin-top:18px">${bigLabel}</p>
+      <p class="stat-big">${esc(formatMoney(p.currentPence))}</p>
+      <div class="stat-pair">
+        ${pair.map(([k, v]) => `<div><p class="stat-label">${k}</p><p class="stat-mid">${esc(v)}</p></div>`).join('')}
+      </div>
+      ${p.targetDate ? `<div class="target">
+        <span class="target-pill">${p.overdue ? 'Target was' : 'Target on'} ${esc(shortDate(p.targetDate))}</span>
+        ${countdown}
+      </div>` : ''}
+      ${rates}
+      ${pace}
+    </div>`;
+}
+
+function plainOverview(account, entry) {
+  const isDebt = account.type === 'liability';
+  return `
+    <div class="goal-hero">
+      <div style="display:grid;justify-items:center;margin:8px 0 14px">${badge(isDebt ? 'Debt' : account.category, 'large')}</div>
+      <p class="stat-label">${isDebt ? 'Owed' : 'Value'}</p>
+      <p class="stat-big${isDebt && entry.valuePence > 0 ? ' is-negative' : ''}">${esc(formatMoney(isDebt ? -entry.valuePence : entry.valuePence))}</p>
+      ${account.type === 'quantity' ? `<p class="muted" style="font-size:14.5px;margin-top:4px">${esc(formatUnits(entry.unitsE8, 8))} ${esc(account.unit || 'units')} at ${esc(formatMoney(entry.pricePence))}</p>` : ''}
+      ${account.archived ? '' : `<button type="button" class="button is-small" style="margin-top:16px" data-action="edit-goal" data-arg="${esc(account.id)}">${icon.flag}Set a goal</button>`}
+    </div>`;
+}
+
+function renderAccount() {
+  const host = byId('view-account');
+  const account = accountById(app.accountId);
+  if (!account) return;
+  const today = todayISO();
+  const entry = balancesAt(app.state, today).get(account.id) || { valuePence: 0, unitsE8: 0, pricePence: 0 };
+  const isDebt = account.type === 'liability';
+  const isQuantity = account.type === 'quantity';
+  const txs = sortedTransactions(app.state).filter((t) => t.accountId === account.id).reverse();
+  const ordered = activeAccounts(app.state);
+  const position = ordered.findIndex((a) => a.id === account.id);
+  const tab = app.accountTab;
+
+  let panel;
+  if (tab === 'records') {
+    panel = txs.length
+      ? `<div class="list-group">${txs.map((tx) => recordRow(tx, account, { showAccount: false })).join('')}</div>
+         <p class="page-intro" style="margin-top:12px">${txs.length} entr${txs.length === 1 ? 'y' : 'ies'}. Tap one to change or delete it.</p>`
+      : `<div class="empty"><p class="empty-title">No entries yet</p>
+          <p class="empty-body">Every amount added to or taken from ${esc(account.name)} is listed here.</p>
+          <button type="button" class="button is-primary" data-action="new-tx" data-arg="${esc(account.id)}" data-dir="in">${icon.plus}Add the first entry</button></div>`;
+  } else {
+    const head = account.goal && !account.archived ? goalOverview(account, entry, today) : plainOverview(account, entry);
+
+    let payoff = '';
+    if (isDebt && entry.valuePence > 0) {
+      const monthly = averageMonthlyRepayment(app.state, account.id, { today, windowMonths: 6 });
+      const projection = projectPayoff(entry.valuePence, monthly, account.interestRatePct || 0, today);
+      payoff = `<div class="info-card">
+        <p class="info-card-title">When it clears</p>
+        <p>${projection.months === null
+    ? `No payoff date can be worked out: ${esc(projection.reason)}.${monthly > 0 ? ` You are paying about ${esc(formatMoney(monthly))} a month.` : ''}`
+    : `At ${esc(formatMoney(monthly))} a month${account.interestRatePct ? ` and ${esc(account.interestRatePct)}% interest` : ''}, this clears in ${projection.months} month${projection.months === 1 ? '' : 's'}, around ${esc(longDate(projection.payoffDate))}.${projection.totalInterestPence ? ` That includes about ${esc(formatMoney(projection.totalInterestPence))} of interest.` : ''}`}</p>
+      </div>`;
+    }
+
+    let holding = '';
+    if (isQuantity) {
+      holding = `<div class="info-card">
+        <p class="info-card-title">Holding</p>
+        <dl class="info-grid">
+          <div><dt>Held</dt><dd>${esc(formatUnits(entry.unitsE8, 8))} ${esc(account.unit || 'units')}</dd></div>
+          <div><dt>Price per ${esc(account.unit || 'unit')}</dt><dd>${esc(formatMoney(account.unitPricePence || 0))}</dd></div>
+        </dl>
+        <div class="price-editor">
+          <div class="field">
+            <label for="unit-price">New price</label>
+            <input class="input" id="unit-price" type="text" inputmode="decimal" autocomplete="off"
+                   value="${esc(((account.unitPricePence || 0) / 100).toFixed(2))}">
+          </div>
+          <button type="button" class="button is-primary" data-action="save-price" data-arg="${esc(account.id)}">Save</button>
+        </div>
+        <p class="field-hint" id="price-hint" style="margin-top:8px">${account.priceUpdatedAt
+    ? `Updated ${esc(longDate(account.priceUpdatedAt))}, ${esc(account.priceSource === 'live' ? 'from the price service' : 'typed in')}.`
+    : 'Never set. Type the price today, or the price you paid.'}</p>
+      </div>`;
+    }
+
+    panel = `
+      ${head}
+      ${account.archived ? '' : `<div class="quick-actions">
+        <button type="button" class="button is-primary" data-action="new-tx" data-arg="${esc(account.id)}" data-dir="in">${icon.plus}${isDebt ? 'Add to debt' : 'Add money'}</button>
+        <button type="button" class="button" data-action="new-tx" data-arg="${esc(account.id)}" data-dir="out">${icon.minus}${isDebt ? 'Repay' : 'Withdraw'}</button>
+      </div>`}
+      <div class="info-card" id="account-chart-card">
+        <p class="info-card-title">${isDebt ? 'Owed over time' : 'Value over time'}</p>
+        <p class="hero-readout" data-readout data-default="Touch the line to see any day" style="margin-top:0">Touch the line to see any day</p>
+        <div data-scrub id="account-chart"></div>
+      </div>
+      ${holding}
+      ${payoff}
+      <div class="section-head"><h2 class="section-title">Manage</h2></div>
+      <div class="list-group">
+        ${account.goal ? settingsRow({ action: 'edit-goal', arg: account.id, glyph: icon.flag, title: 'Edit goal' }) : ''}
+        ${account.goal ? settingsRow({ action: 'clear-goal', arg: account.id, glyph: icon.close, title: 'Remove goal' }) : ''}
+        ${settingsRow({ action: 'edit-account', arg: account.id, glyph: icon.edit, title: 'Edit account', sub: 'Name, category, unit or interest rate' })}
+        ${account.archived ? '' : `
+          <button type="button" class="list-row" data-action="move-account" data-arg="${esc(account.id)}" data-dir="up" ${position <= 0 ? 'disabled' : ''}>
+            <span class="row-icon">${icon.up}</span><span class="row-main"><span class="row-title">Move up the list</span></span><span></span></button>
+          <button type="button" class="list-row" data-action="move-account" data-arg="${esc(account.id)}" data-dir="down" ${position === -1 || position === ordered.length - 1 ? 'disabled' : ''}>
+            <span class="row-icon">${icon.down}</span><span class="row-main"><span class="row-title">Move down the list</span></span><span></span></button>`}
+        ${settingsRow({ action: 'toggle-archive', arg: account.id, glyph: icon.archive, title: account.archived ? 'Restore' : 'Archive', sub: account.archived ? 'Back into your totals' : 'Keeps its history, out of totals' })}
+        ${settingsRow({ action: 'delete-account', arg: account.id, glyph: icon.trash, title: 'Delete this account', danger: true })}
+      </div>`;
+  }
+
+  host.innerHTML = `
+    <div class="detail-bar"><div class="detail-bar-inner">
+      <button type="button" class="icon-button" data-action="back" aria-label="Back">${icon.back}</button>
+      <h1 class="detail-title">${esc(account.name)}</h1>
+      <button type="button" class="icon-button" data-action="edit-account" data-arg="${esc(account.id)}" aria-label="Edit ${esc(account.name)}">${icon.edit}</button>
+    </div></div>
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" data-action="account-tab" data-tab="overview" aria-selected="${tab === 'overview'}">${account.goal ? 'Goal' : 'Overview'}</button>
+      <button type="button" role="tab" data-action="account-tab" data-tab="records" aria-selected="${tab === 'records'}">Records</button>
+    </div>
+    <div role="tabpanel">${panel}</div>`;
+
+  const chartHost = byId('account-chart');
+  if (chartHost) {
+    const series = accountSeries(app.state, account.id, { today }).map((p) => ({ date: p.date, value: p.valuePence }));
+    if (series.length >= 2) {
+      chartHost.innerHTML = lineChart({ series, width: contentWidth(chartHost), height: 150, label: `${account.name} over time` });
+      attachScrub(chartHost, byId('account-chart-card').querySelector('[data-readout]'));
+    } else {
+      const card = byId('account-chart-card');
+      card.querySelector('[data-readout]').remove();
+      chartHost.innerHTML = '<div class="chart-empty"><p class="chart-empty-title">Not enough history yet</p><p class="chart-empty-hint">The line appears once there are entries on two different days.</p></div>';
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Crosshair scrubbing on line charts                                  */
+/* ------------------------------------------------------------------ */
+
+function attachScrub(container, readout) {
+  if (!container || !readout) return;
+  const svg = container.querySelector('svg[data-points]');
+  if (!svg) return;
+  let points;
+  try { points = JSON.parse(svg.dataset.points); } catch { return; }
+  if (!points.length) return;
+  const group = svg.querySelector('.crosshair-group');
+  const line = group.querySelector('line');
+  const dot = group.querySelector('circle');
+  let index = points.length - 1;
+
+  const show = (i) => {
+    index = Math.max(0, Math.min(points.length - 1, i));
+    const [x, y, date, value] = points[index];
+    line.setAttribute('x1', x);
+    line.setAttribute('x2', x);
+    dot.setAttribute('cx', x);
+    dot.setAttribute('cy', y);
+    group.setAttribute('visibility', 'visible');
+    readout.textContent = '';
+    const strong = document.createElement('strong');
+    strong.textContent = formatMoney(value);
+    readout.append(strong, document.createTextNode(` on ${longDate(date)}`));
+  };
+  const nearest = (clientX) => {
+    const box = svg.getBoundingClientRect();
+    const scale = svg.viewBox.baseVal.width / (box.width || 1);
+    const x = (clientX - box.left) * scale;
+    let best = 0;
+    for (let i = 1; i < points.length; i += 1) {
+      if (Math.abs(points[i][0] - x) < Math.abs(points[best][0] - x)) best = i;
+    }
+    return best;
+  };
+  const reset = () => {
+    group.setAttribute('visibility', 'hidden');
+    readout.textContent = readout.dataset.default || '';
+  };
+
+  svg.setAttribute('tabindex', '0');
+  svg.addEventListener('pointerdown', (e) => show(nearest(e.clientX)));
+  svg.addEventListener('pointermove', (e) => {
+    if (e.pointerType === 'mouse' || e.buttons || e.pressure > 0) show(nearest(e.clientX));
+  });
+  svg.addEventListener('pointerleave', reset);
+  svg.addEventListener('pointercancel', reset);
+  svg.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') window.setTimeout(reset, 1400); });
+  svg.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); show(index - 1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); show(index + 1); }
+    if (e.key === 'Home') { e.preventDefault(); show(0); }
+    if (e.key === 'End') { e.preventDefault(); show(points.length - 1); }
+    if (e.key === 'Escape') reset();
+  });
+  svg.addEventListener('blur', reset);
+}
+
+/* ------------------------------------------------------------------ */
+/* Navigation                                                          */
+/* ------------------------------------------------------------------ */
+
+function goTo(view) {
+  if (app.view === 'account' && history.state && history.state.phthalo === 'account') {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+  app.view = view;
+  app.accountId = null;
+  render();
+  window.scrollTo(0, 0);
+}
+
+function openAccount(id, tab = 'overview') {
+  if (!accountById(id)) return;
+  if (app.sheetOpen) closeSheet();
+  if (app.view !== 'account') {
+    app.previousView = app.view;
+    history.pushState({ phthalo: 'account', id }, '', '#account');
+  } else {
+    history.replaceState({ phthalo: 'account', id }, '', '#account');
+  }
+  app.view = 'account';
+  app.accountId = id;
+  app.accountTab = tab;
+  render();
+  window.scrollTo(0, 0);
+}
+
+function leaveAccount() {
+  app.view = TAB_VIEWS.includes(app.previousView) ? app.previousView : 'home';
+  app.accountId = null;
+  render();
+  window.scrollTo(0, 0);
+}
+
+// The phone's own back gesture closes a sheet first, then the account screen.
+window.addEventListener('popstate', (event) => {
+  if (app.sheetOpen) {
+    closeSheet();
+    if (app.view === 'account' && app.accountId) {
+      history.pushState({ phthalo: 'account', id: app.accountId }, '', '#account');
+    }
+    return;
+  }
+  const st = event.state;
+  if (st && st.phthalo === 'account' && accountById(st.id)) {
+    app.view = 'account';
+    app.accountId = st.id;
+    render();
+  } else if (app.view === 'account') {
+    leaveAccount();
+  }
+});
 
 /* ------------------------------------------------------------------ */
 /* Sheet                                                               */
@@ -562,194 +933,76 @@ function longDate(iso) {
 let lastFocus = null;
 
 function openSheet(title, html) {
-  lastFocus = document.activeElement;
+  if (!app.sheetOpen) lastFocus = document.activeElement;
   const sheet = byId('sheet');
   sheet.innerHTML = `
+    <div class="sheet-grab" aria-hidden="true"></div>
     <div class="sheet-head">
       <h2 class="sheet-title" id="sheet-title">${esc(title)}</h2>
-      <button type="button" class="button is-icon is-quiet" data-action="close-sheet" aria-label="Close">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor"
-             stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
-      </button>
+      <button type="button" class="icon-button" data-action="close-sheet" aria-label="Close">${icon.close}</button>
     </div>
     ${html}`;
   byId('sheet-backdrop').hidden = false;
-  const focusable = sheet.querySelector('input, select, textarea, button:not([data-action="close-sheet"])');
-  if (focusable) focusable.focus();
+  app.sheetOpen = true;
+  const focusable = sheet.querySelector('input:not([type="hidden"]), select, textarea');
+  if (focusable && window.matchMedia('(pointer: fine)').matches) focusable.focus();
+  else sheet.focus({ preventScroll: true });
   sheet.scrollTop = 0;
 }
 
 function closeSheet() {
   byId('sheet-backdrop').hidden = true;
   byId('sheet').innerHTML = '';
-  if (lastFocus && document.body.contains(lastFocus)) lastFocus.focus();
+  app.sheetOpen = false;
+  if (lastFocus && document.body.contains(lastFocus)) lastFocus.focus({ preventScroll: true });
   lastFocus = null;
 }
 
 function confirmSheet({ title, body, confirmLabel, danger = false, extraAction = null, onConfirm }) {
   app.pendingConfirm = onConfirm;
   openSheet(title, `
-    <p style="font-size:15px;color:var(--muted);margin-bottom:16px">${esc(body)}</p>
-    ${extraAction ? `<div class="banner-actions" style="margin-bottom:12px">
-      <button type="button" class="button" data-action="${esc(extraAction.action)}">${esc(extraAction.label)}</button>
-    </div>` : ''}
-    <div class="form-actions">
+    <p class="sheet-body">${esc(body)}</p>
+    ${extraAction ? `<button type="button" class="button is-block" data-action="${esc(extraAction.action)}" style="margin-bottom:10px">${icon.download}${esc(extraAction.label)}</button>` : ''}
+    <div class="form-actions" style="margin-top:0">
       <button type="button" class="button" data-action="close-sheet">Cancel</button>
-      <button type="button" class="button ${danger ? 'is-danger' : 'is-primary'}"
-              data-action="run-confirm">${esc(confirmLabel)}</button>
+      <button type="button" class="button ${danger ? 'is-danger' : 'is-primary'}" data-action="run-confirm">${esc(confirmLabel)}</button>
     </div>`);
 }
 
 /* ------------------------------------------------------------------ */
-/* Account detail and forms                                            */
+/* Forms                                                               */
 /* ------------------------------------------------------------------ */
 
-function accountById(id) {
-  return app.state.accounts.find((a) => a.id === id) || null;
-}
-
-function openAccount(id) {
-  const account = accountById(id);
-  if (!account) return;
+function accountPicker() {
   const today = todayISO();
-  const entry = balancesAt(app.state, today).get(account.id)
-    || { valuePence: 0, unitsE8: 0, pricePence: 0 };
-  const isDebt = account.type === 'liability';
-  const isQuantity = account.type === 'quantity';
-  const txs = sortedTransactions(app.state).filter((t) => t.accountId === account.id).reverse();
-
-  const progress = account.goal ? goalProgress(account, entry.valuePence, today) : null;
-  const ordered = activeAccounts(app.state);
-  const position = ordered.findIndex((a) => a.id === account.id);
-  const isFirst = position <= 0;
-  const isLast = position === -1 || position === ordered.length - 1;
-
-  let payoff = '';
-  if (isDebt && entry.valuePence > 0) {
-    const monthly = averageMonthlyRepayment(app.state, account.id, { today, windowMonths: 6 });
-    const projection = projectPayoff(entry.valuePence, monthly, account.interestRatePct || 0, today);
-    payoff = `
-      <div class="card" style="margin-bottom:14px">
-        <p class="card-subtitle" style="margin-bottom:6px">Payoff projection</p>
-        ${projection.months === null
-    ? `<p style="font-size:14.5px">No payoff date can be worked out: ${esc(projection.reason)}.
-         ${monthly > 0 ? `You are paying about ${esc(formatMoney(monthly))} a month.` : ''}</p>`
-    : `<p style="font-size:14.5px">At ${esc(formatMoney(monthly))} a month
-         ${account.interestRatePct ? `and ${esc(account.interestRatePct)}% interest` : 'with no interest'},
-         this clears in ${projection.months} month${projection.months === 1 ? '' : 's'},
-         around ${esc(longDate(projection.payoffDate))}.
-         ${projection.totalInterestPence ? `That includes about ${esc(formatMoney(projection.totalInterestPence))} of interest.` : ''}</p>`}
-      </div>`;
-  }
-
-  const goalBlock = progress ? `
-    <div class="card" style="margin-bottom:14px">
-      <p class="card-subtitle" style="margin-bottom:6px">Goal</p>
-      <p style="font-size:15px;font-weight:650">${esc(Math.round(progress.percent))}% reached${progress.exceeded
-    ? ` (${Math.round(progress.rawPercent)}% of the target)` : ''}</p>
-      <p style="font-size:14px;color:var(--muted)">
-        ${progress.remainingPence > 0
-    ? `${esc(formatMoney(progress.remainingPence))} still needed`
-    : 'Target reached'}${progress.targetDate
-    ? `, ${esc(progress.overdue ? `target date passed ${describeTimeRemaining(progress.timeRemaining)}`
-      : describeTimeRemaining(progress.timeRemaining) + ' left')}` : ''}.
-      </p>
-      <div class="banner-actions" style="margin-top:10px">
-        <button type="button" class="button is-small" data-action="edit-goal" data-arg="${esc(account.id)}">Edit goal</button>
-        <button type="button" class="button is-small is-quiet" data-action="clear-goal" data-arg="${esc(account.id)}">Remove goal</button>
-      </div>
-    </div>`
-    : `<div class="banner-actions" style="margin-bottom:14px">
-        <button type="button" class="button is-small" data-action="edit-goal" data-arg="${esc(account.id)}">Set a goal</button>
-      </div>`;
-
-  openSheet(account.name, `
-    <div class="card" style="margin-bottom:14px">
-      <p class="hero-label">${esc(isDebt ? 'Owed' : 'Value')}</p>
-      <p class="hero-value">${esc(formatMoney(isDebt ? -entry.valuePence : entry.valuePence))}</p>
-      <p class="card-subtitle">${esc(account.category)}${isQuantity
-    ? ` · ${esc(formatUnits(entry.unitsE8, 8))} ${esc(account.unit || 'units')} at ${esc(formatMoney(entry.pricePence))}`
-    : ''}${account.archived ? ' · archived' : ''}</p>
-    </div>
-
-    <div class="banner-actions" style="margin-bottom:14px">
-      <button type="button" class="button is-primary" data-action="new-tx" data-arg="${esc(account.id)}"
-              data-dir="in">${esc(isDebt ? 'Add to debt' : 'Add money')}</button>
-      <button type="button" class="button" data-action="new-tx" data-arg="${esc(account.id)}"
-              data-dir="out">${esc(isDebt ? 'Make a payment' : 'Withdraw money')}</button>
-    </div>
-
-    ${isQuantity ? `
-      <div class="card" style="margin-bottom:14px">
-        <p class="card-subtitle" style="margin-bottom:8px">Unit price</p>
-        <div class="field-row">
-          <div class="field" style="margin:0">
-            <label for="unit-price">Price per ${esc(account.unit || 'unit')}</label>
-            <input class="input" id="unit-price" type="text" inputmode="decimal"
-                   value="${esc((account.unitPricePence / 100).toFixed(2))}">
-          </div>
-          <div style="display:flex;align-items:flex-end">
-            <button type="button" class="button is-primary" data-action="save-price"
-                    data-arg="${esc(account.id)}" style="width:100%">Save price</button>
-          </div>
-        </div>
-        <p class="field-hint" id="price-hint">${account.priceUpdatedAt
-    ? `Last updated ${esc(longDate(account.priceUpdatedAt))} (${esc(account.priceSource || 'manual')}).`
-    : 'Never updated. Type the price you paid or the price today.'}</p>
-      </div>` : ''}
-
-    ${goalBlock}
-    ${payoff}
-
-    <div class="section-head"><h3 class="section-title">History</h3></div>
-    ${txs.length ? `<ul class="row-list">${txs.slice(0, 60).map((tx) => `
-      <li><button type="button" class="row" data-action="edit-tx" data-arg="${esc(tx.id)}">
-        <span class="row-stripe" style="background:${tx.direction === 'out'
-    ? 'var(--negative)' : 'var(--positive)'}"></span>
-        <span class="row-main">
-          <span class="row-name">${esc(longDate(tx.date))}</span>
-          <span class="row-meta">${esc([tx.unitsE8 ? `${formatUnits(tx.unitsE8, 6)} ${account.unit || 'units'}` : '',
-    tx.note].filter(Boolean).join(' · ') || (tx.direction === 'out' ? 'Money out' : 'Money in'))}</span>
-        </span>
-        <span class="row-value${tx.direction === 'out' ? ' is-negative' : ''}">
-          ${esc(formatMoney(tx.direction === 'out' ? -tx.amountPence : tx.amountPence, { showSign: true }))}
-        </span>
-      </button></li>`).join('')}</ul>`
-    : '<p class="empty-note">No entries for this account yet.</p>'}
-
-    <div class="form-actions">
-      <button type="button" class="button" data-action="move-account" data-arg="${esc(account.id)}"
-              data-dir="up" ${isFirst ? 'disabled' : ''}>Move up</button>
-      <button type="button" class="button" data-action="move-account" data-arg="${esc(account.id)}"
-              data-dir="down" ${isLast ? 'disabled' : ''}>Move down</button>
-    </div>
-    <div class="form-actions">
-      <button type="button" class="button" data-action="edit-account" data-arg="${esc(account.id)}">Edit account</button>
-      <button type="button" class="button" data-action="toggle-archive" data-arg="${esc(account.id)}">
-        ${account.archived ? 'Restore' : 'Archive'}</button>
-    </div>
-    <div class="form-actions">
-      <button type="button" class="button is-danger" data-action="delete-account"
-              data-arg="${esc(account.id)}" style="width:100%">Delete this account</button>
+  const balances = balancesAt(app.state, today);
+  const accounts = activeAccounts(app.state);
+  if (!accounts.length) { accountForm(null); return; }
+  openSheet('Add an entry to', `
+    <div class="list-group">
+      ${accounts.map((a) => {
+    const entry = balances.get(a.id) || { valuePence: 0 };
+    const isDebt = a.type === 'liability';
+    return `<button type="button" class="list-row" data-action="new-tx" data-arg="${esc(a.id)}" data-dir="in">
+          ${badge(isDebt ? 'Debt' : a.category, 'small')}
+          <span class="row-main"><span class="row-title">${esc(a.name)}</span><span class="row-sub">${esc(a.category)}</span></span>
+          <span class="row-end"><span class="row-amount">${esc(formatMoney(isDebt ? -entry.valuePence : entry.valuePence))}</span></span>
+        </button>`;
+  }).join('')}
     </div>`);
 }
 
 function accountForm(accountId) {
   const existing = accountId ? accountById(accountId) : null;
-  const a = existing || {
-    id: null, name: '', type: 'balance', category: 'Cash', unit: '', unitPricePence: 0,
-    interestRatePct: '', note: ''
-  };
+  const a = existing || { id: null, name: '', type: 'balance', category: 'Cash', unit: '', unitPricePence: 0, interestRatePct: '', note: '' };
 
   openSheet(existing ? `Edit ${existing.name}` : 'Add an account', `
     <form data-form="account" data-arg="${esc(accountId || '')}" novalidate>
       <div class="field">
         <label for="acc-name">Name</label>
-        <input class="input" id="acc-name" name="name" type="text" value="${esc(a.name)}"
-               maxlength="60" autocomplete="off" required>
+        <input class="input" id="acc-name" name="name" type="text" value="${esc(a.name)}" maxlength="60" autocomplete="off" required>
         <p class="field-error" data-error="name" hidden></p>
       </div>
-
       <div class="field">
         <label for="acc-type">Type</label>
         <select class="select" id="acc-type" name="type" ${existing ? 'disabled' : ''}>
@@ -759,20 +1012,17 @@ function accountForm(accountId) {
         </select>
         ${existing ? '<p class="field-hint">The type cannot change once there is history against it.</p>' : ''}
       </div>
-
       <div class="field">
         <label for="acc-category">Category</label>
         <select class="select" id="acc-category" name="category">
           ${CATEGORIES.map((c) => `<option value="${esc(c)}"${a.category === c ? ' selected' : ''}>${esc(c)}</option>`).join('')}
         </select>
       </div>
-
       <div data-when-type="quantity" ${a.type === 'quantity' ? '' : 'hidden'}>
         <div class="field-row">
           <div class="field">
             <label for="acc-unit">Unit name</label>
-            <input class="input" id="acc-unit" name="unit" type="text" value="${esc(a.unit || '')}"
-                   placeholder="BTC, oz" maxlength="12" autocomplete="off">
+            <input class="input" id="acc-unit" name="unit" type="text" value="${esc(a.unit || '')}" placeholder="BTC, oz" maxlength="12" autocomplete="off">
           </div>
           <div class="field">
             <label for="acc-price">Price per unit</label>
@@ -782,21 +1032,17 @@ function accountForm(accountId) {
         </div>
         <p class="field-error" data-error="unitPrice" hidden></p>
       </div>
-
       <div class="field" data-when-type="liability" ${a.type === 'liability' ? '' : 'hidden'}>
         <label for="acc-rate">Annual interest rate, optional</label>
         <input class="input" id="acc-rate" name="interestRatePct" type="text" inputmode="decimal"
-               value="${esc(a.interestRatePct === '' || a.interestRatePct === undefined ? '' : a.interestRatePct)}"
-               placeholder="6.9">
-        <p class="field-hint">Used to project when the debt clears at your current payment rate.</p>
+               value="${esc(a.interestRatePct === '' || a.interestRatePct === undefined ? '' : a.interestRatePct)}" placeholder="6.9">
+        <p class="field-hint">Used to work out when the debt clears at your current payments.</p>
         <p class="field-error" data-error="interestRatePct" hidden></p>
       </div>
-
       <div class="field">
         <label for="acc-note">Note, optional</label>
         <input class="input" id="acc-note" name="note" type="text" value="${esc(a.note || '')}" maxlength="120">
       </div>
-
       <div class="form-actions">
         <button type="button" class="button" data-action="close-sheet">Cancel</button>
         <button type="submit" class="button is-primary">${existing ? 'Save changes' : 'Add account'}</button>
@@ -804,17 +1050,13 @@ function accountForm(accountId) {
     </form>`);
 
   const typeSelect = byId('acc-type');
-  if (typeSelect) {
-    typeSelect.addEventListener('change', () => {
-      const value = typeSelect.value;
-      document.querySelectorAll('[data-when-type]').forEach((el) => {
-        el.hidden = el.dataset.whenType !== value;
-      });
-      const categorySelect = byId('acc-category');
-      if (value === 'liability') categorySelect.value = 'Debt';
-      else if (categorySelect.value === 'Debt') categorySelect.value = 'Cash';
-    });
-  }
+  typeSelect.addEventListener('change', () => {
+    const value = typeSelect.value;
+    document.querySelectorAll('[data-when-type]').forEach((el) => { el.hidden = el.dataset.whenType !== value; });
+    const categorySelect = byId('acc-category');
+    if (value === 'liability') categorySelect.value = 'Debt';
+    else if (categorySelect.value === 'Debt') categorySelect.value = 'Cash';
+  });
 }
 
 function transactionForm({ accountId, direction = 'in', txId = null }) {
@@ -827,84 +1069,66 @@ function transactionForm({ accountId, direction = 'in', txId = null }) {
   const isQuantity = account.type === 'quantity';
   const today = todayISO();
   const entry = balancesAt(app.state, today).get(account.id) || { valuePence: 0, pricePence: 0 };
-
   const inLabel = isDebt ? 'Add to debt' : 'Add money';
-  const outLabel = isDebt ? 'Make a payment' : 'Withdraw money';
-  const price = existing && existing.unitPricePence
-    ? existing.unitPricePence
-    : (account.unitPricePence || entry.pricePence || 0);
+  const outLabel = isDebt ? 'Repay' : 'Withdraw';
+  const price = existing && existing.unitPricePence ? existing.unitPricePence : (account.unitPricePence || entry.pricePence || 0);
 
-  openSheet(existing ? 'Edit entry' : `${dir === 'in' ? inLabel : outLabel} · ${account.name}`, `
-    <form data-form="transaction" data-arg="${esc(existing ? existing.id : '')}"
-          data-account="${esc(account.id)}" novalidate>
+  openSheet(existing ? 'Edit entry' : account.name, `
+    <form data-form="transaction" data-arg="${esc(existing ? existing.id : '')}" data-account="${esc(account.id)}" novalidate>
       <div class="field">
-        <label id="dir-label">Direction</label>
-        <div class="segmented" role="group" aria-labelledby="dir-label">
+        <div class="segmented" role="group" aria-label="Direction">
           <button type="button" data-set-direction="in" aria-pressed="${dir === 'in'}">${esc(inLabel)}</button>
           <button type="button" data-set-direction="out" aria-pressed="${dir === 'out'}">${esc(outLabel)}</button>
         </div>
         <input type="hidden" name="direction" value="${esc(dir)}">
       </div>
-
       ${isQuantity ? `
         <div class="field">
-          <label id="mode-label">Record this entry in</label>
+          <span class="field-label" id="mode-label">Record this in</span>
           <div class="segmented" role="group" aria-labelledby="mode-label">
             <button type="button" data-set-mode="money" aria-pressed="true">Pounds</button>
             <button type="button" data-set-mode="units" aria-pressed="false">${esc(account.unit || 'Units')}</button>
           </div>
           <input type="hidden" name="mode" value="money">
         </div>` : ''}
-
       <div class="field" data-mode-field="money">
-        <label for="tx-amount">Amount in pounds</label>
-        <input class="input" id="tx-amount" name="amount" type="text" inputmode="decimal"
-               value="${esc(existing ? (existing.amountPence / 100).toFixed(2) : '')}"
-               placeholder="0.00" autocomplete="off">
+        <label for="tx-amount">Amount</label>
+        <input class="input input-money" id="tx-amount" name="amount" type="text" inputmode="decimal"
+               value="${esc(existing ? (existing.amountPence / 100).toFixed(2) : '')}" placeholder="£0.00" autocomplete="off">
         <p class="field-error" data-error="amount" hidden></p>
       </div>
-
       ${isQuantity ? `
         <div class="field" data-mode-field="units" hidden>
           <label for="tx-units">Quantity in ${esc(account.unit || 'units')}</label>
-          <input class="input" id="tx-units" name="units" type="text" inputmode="decimal"
-                 value="${esc(existing && existing.unitsE8 ? formatUnits(existing.unitsE8, 8) : '')}"
-                 placeholder="0.00000000" autocomplete="off">
+          <input class="input input-money" id="tx-units" name="units" type="text" inputmode="decimal"
+                 value="${esc(existing && existing.unitsE8 ? formatUnits(existing.unitsE8, 8) : '')}" placeholder="0.00000000" autocomplete="off">
           <p class="field-error" data-error="units" hidden></p>
         </div>
         <div class="field">
-          <label for="tx-price">Price per ${esc(account.unit || 'unit')} on that date</label>
-          <input class="input" id="tx-price" name="unitPrice" type="text" inputmode="decimal"
-                 value="${esc(price ? (price / 100).toFixed(2) : '')}" autocomplete="off">
-          <p class="field-hint">Used to convert between pounds and ${esc(account.unit || 'units')},
-            and to value the holding on that date.</p>
+          <label for="tx-price">Price per ${esc(account.unit || 'unit')} on that day</label>
+          <input class="input" id="tx-price" name="unitPrice" type="text" inputmode="decimal" value="${esc(price ? (price / 100).toFixed(2) : '')}" autocomplete="off">
+          <p class="field-hint">Converts between pounds and ${esc(account.unit || 'units')}, and values the holding on that day.</p>
           <p class="field-error" data-error="unitPrice" hidden></p>
         </div>` : ''}
-
-      <div class="field">
-        <label for="tx-date">Date</label>
-        <input class="input" id="tx-date" name="date" type="date"
-               value="${esc(existing ? existing.date : today)}" max="${esc(today)}">
-        <p class="field-hint">Backdate this freely. The charts reorder themselves.</p>
-        <p class="field-error" data-error="date" hidden></p>
+      <div class="field-row">
+        <div class="field">
+          <label for="tx-date">Date</label>
+          <input class="input" id="tx-date" name="date" type="date" value="${esc(existing ? existing.date : today)}" max="${esc(today)}">
+          <p class="field-error" data-error="date" hidden></p>
+        </div>
+        <div class="field">
+          <label for="tx-note">Note</label>
+          <input class="input" id="tx-note" name="note" type="text" value="${esc(existing ? existing.note : '')}" maxlength="120" autocomplete="off" placeholder="Optional">
+        </div>
       </div>
-
-      <div class="field">
-        <label for="tx-note">Note, optional</label>
-        <input class="input" id="tx-note" name="note" type="text"
-               value="${esc(existing ? existing.note : '')}" maxlength="120" autocomplete="off">
-      </div>
-
-      <p class="field-error" data-error="form" hidden></p>
-
+      <p class="field-hint" style="margin-top:-8px">Backdate freely. Every chart puts the entry in its right place.</p>
+      <p class="field-error" data-error="form" hidden style="margin-top:12px"></p>
       <div class="form-actions">
         <button type="button" class="button" data-action="close-sheet">Cancel</button>
-        <button type="submit" class="button is-primary">${existing ? 'Save changes' : 'Save entry'}</button>
+        <button type="submit" class="button is-primary">${existing ? 'Save changes' : 'Save'}</button>
       </div>
-      ${existing ? `<div class="form-actions">
-        <button type="button" class="button is-danger" data-action="delete-tx"
-                data-arg="${esc(existing.id)}" style="width:100%">Delete this entry</button>
-      </div>` : ''}
+      ${existing ? `<button type="button" class="button is-danger is-block" style="margin-top:10px"
+          data-action="delete-tx" data-arg="${esc(existing.id)}">${icon.trash}Delete this entry</button>` : ''}
     </form>`);
 
   const sheet = byId('sheet');
@@ -913,6 +1137,9 @@ function transactionForm({ accountId, direction = 'in', txId = null }) {
       sheet.querySelectorAll('[data-set-direction]').forEach((b) => b.setAttribute('aria-pressed', 'false'));
       button.setAttribute('aria-pressed', 'true');
       sheet.querySelector('input[name="direction"]').value = button.dataset.setDirection;
+      const form = sheet.querySelector('form');
+      form.dataset.forceNext = '';
+      setFieldError(form, 'form', '');
     });
   });
   sheet.querySelectorAll('[data-set-mode]').forEach((button) => {
@@ -921,9 +1148,7 @@ function transactionForm({ accountId, direction = 'in', txId = null }) {
       sheet.querySelectorAll('[data-set-mode]').forEach((b) => b.setAttribute('aria-pressed', 'false'));
       button.setAttribute('aria-pressed', 'true');
       sheet.querySelector('input[name="mode"]').value = mode;
-      sheet.querySelectorAll('[data-mode-field]').forEach((field) => {
-        field.hidden = field.dataset.modeField !== mode;
-      });
+      sheet.querySelectorAll('[data-mode-field]').forEach((field) => { field.hidden = field.dataset.modeField !== mode; });
     });
   });
 }
@@ -938,29 +1163,23 @@ function goalForm(accountId) {
 
   openSheet(`Goal for ${account.name}`, `
     <form data-form="goal" data-arg="${esc(account.id)}" novalidate>
-      ${isDebt
-    ? `<p class="section-hint">For a debt the goal is a payoff date. The target is normally zero,
-         meaning cleared in full.</p>`
-    : ''}
+      ${isDebt ? '<p class="sheet-body">For a debt the goal is a payoff date. The target is normally zero, meaning cleared in full.</p>' : ''}
       <div class="field">
         <label for="goal-target">${esc(isDebt ? 'Target balance, normally 0' : 'Target amount')}</label>
-        <input class="input" id="goal-target" name="target" type="text" inputmode="decimal"
-               value="${esc(goal ? (goal.targetPence / 100).toFixed(2) : (isDebt ? '0.00' : ''))}"
-               autocomplete="off">
+        <input class="input input-money" id="goal-target" name="target" type="text" inputmode="decimal"
+               value="${esc(goal ? (goal.targetPence / 100).toFixed(2) : (isDebt ? '0.00' : ''))}" placeholder="£0.00" autocomplete="off">
         <p class="field-error" data-error="target" hidden></p>
       </div>
       <div class="field">
         <label for="goal-date">Target date</label>
-        <input class="input" id="goal-date" name="date" type="date"
-               value="${esc(goal && goal.targetDate ? goal.targetDate : addDays(today, 365))}">
+        <input class="input" id="goal-date" name="date" type="date" value="${esc(goal && goal.targetDate ? goal.targetDate : addDays(today, 365))}">
         <p class="field-error" data-error="date" hidden></p>
       </div>
       <div class="field">
         <label for="goal-start">Starting point</label>
         <input class="input" id="goal-start" name="start" type="text" inputmode="decimal"
-               value="${esc(goal ? (goal.startPence / 100).toFixed(2) : (entry.valuePence / 100).toFixed(2))}"
-               autocomplete="off">
-        <p class="field-hint">Where you were when the goal began. Used for the pace marker.</p>
+               value="${esc(goal ? (goal.startPence / 100).toFixed(2) : (entry.valuePence / 100).toFixed(2))}" autocomplete="off">
+        <p class="field-hint">Where you were when the goal began. The pace check draws a straight line from here.</p>
         <p class="field-error" data-error="start" hidden></p>
       </div>
       <div class="form-actions">
@@ -971,45 +1190,27 @@ function goalForm(accountId) {
 }
 
 function galleryForm() {
-  const enabledCount = app.state.visuals.filter((v) => v.enabled).length;
-  openSheet('Visuals', `
-    <p class="section-hint">Switch visuals on and off, and use the arrows on the home screen to
-      reorder them. Your layout is saved with your data.</p>
-    <div class="row-list">
-      ${app.state.visuals.map((visual, index) => {
-    const meta = VISUAL_LIBRARY[visual.id] || { name: visual.id, blurb: '' };
+  const visuals = app.state.visuals.filter((v) => VISUAL_LIBRARY[v.id]);
+  const on = visuals.filter((v) => v.enabled).length;
+  openSheet('Charts', `
+    <p class="sheet-body">Switch charts on and off, and use the arrows to put them in the order you want.
+      ${on} of ${visuals.length} showing.</p>
+    <div class="list-group">
+      ${visuals.map((visual, index) => {
+    const meta = VISUAL_LIBRARY[visual.id];
     return `
         <div class="gallery-item">
-          <div>
-            <p class="gallery-name">${esc(meta.name)}</p>
-            <p class="gallery-blurb">${esc(meta.blurb)}</p>
-          </div>
-          <button type="button" class="button is-icon is-quiet" data-action="move-visual"
-                  data-arg="${esc(visual.id)}" data-dir="up" ${index === 0 ? 'disabled' : ''}
-                  aria-label="Move ${esc(meta.name)} up">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                 stroke-width="2" aria-hidden="true"><path d="M6 15l6-6 6 6" stroke-linecap="round"
-                 stroke-linejoin="round"/></svg>
-          </button>
-          <button type="button" class="button is-icon is-quiet" data-action="move-visual"
-                  data-arg="${esc(visual.id)}" data-dir="down"
-                  ${index === app.state.visuals.length - 1 ? 'disabled' : ''}
-                  aria-label="Move ${esc(meta.name)} down">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
-                 stroke-width="2" aria-hidden="true"><path d="M6 9l6 6 6-6" stroke-linecap="round"
-                 stroke-linejoin="round"/></svg>
-          </button>
-          <button type="button" class="button is-small${visual.enabled ? ' is-primary' : ''}"
-                  data-action="toggle-visual" data-arg="${esc(visual.id)}"
-                  aria-pressed="${visual.enabled}">${visual.enabled ? 'On' : 'Off'}</button>
+          <div><p class="gallery-name">${esc(meta.name)}</p><p class="gallery-blurb">${esc(meta.blurb)}</p></div>
+          <button type="button" class="icon-button" data-action="move-visual" data-arg="${esc(visual.id)}" data-dir="up"
+                  ${index === 0 ? 'disabled' : ''} aria-label="Move ${esc(meta.name)} up">${icon.up}</button>
+          <button type="button" class="icon-button" data-action="move-visual" data-arg="${esc(visual.id)}" data-dir="down"
+                  ${index === visuals.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(meta.name)} down">${icon.down}</button>
+          <button type="button" class="toggle" data-action="toggle-visual" data-arg="${esc(visual.id)}"
+                  aria-pressed="${visual.enabled}" aria-label="${esc(meta.name)} ${visual.enabled ? 'on' : 'off'}">${visual.enabled ? 'On' : 'Off'}</button>
         </div>`;
   }).join('')}
     </div>
-    <p class="field-hint" style="margin-top:12px">${enabledCount} of
-      ${app.state.visuals.length} showing.</p>
-    <div class="form-actions">
-      <button type="button" class="button is-primary" data-action="close-sheet" style="width:100%">Done</button>
-    </div>`);
+    <div class="form-actions"><button type="button" class="button is-primary" data-action="close-sheet">Done</button></div>`);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1019,10 +1220,7 @@ function galleryForm() {
 function setFieldError(form, name, message) {
   const holder = form.querySelector(`[data-error="${name}"]`);
   const input = form.querySelector(`[name="${name}"]`);
-  if (holder) {
-    holder.textContent = message || '';
-    holder.hidden = !message;
-  }
+  if (holder) { holder.textContent = message || ''; holder.hidden = !message; }
   if (input) input.classList.toggle('has-error', Boolean(message));
 }
 
@@ -1039,12 +1237,13 @@ function handleAccountSubmit(form) {
 
   const name = String(data.get('name') || '').trim();
   if (!name) { setFieldError(form, 'name', 'Give the account a name.'); return; }
-  const clash = app.state.accounts.some((a) => a.id !== id
-    && a.name.toLowerCase() === name.toLowerCase());
-  if (clash) { setFieldError(form, 'name', 'Another account already has that name.'); return; }
+  if (app.state.accounts.some((a) => a.id !== id && a.name.toLowerCase() === name.toLowerCase())) {
+    setFieldError(form, 'name', 'Another account already has that name.');
+    return;
+  }
 
   const type = existing ? existing.type : String(data.get('type') || 'balance');
-  const category = String(data.get('category') || 'Cash');
+  const category = type === 'liability' ? 'Debt' : String(data.get('category') || 'Cash');
 
   let unitPricePence = existing ? (existing.unitPricePence || 0) : 0;
   if (type === 'quantity') {
@@ -1066,6 +1265,7 @@ function handleAccountSubmit(form) {
     } else interestRatePct = Number(raw);
   }
 
+  let newId = null;
   commit((draft) => {
     if (existing) {
       const target = draft.accounts.find((a) => a.id === id);
@@ -1085,13 +1285,14 @@ function handleAccountSubmit(form) {
         else target.interestRatePct = interestRatePct;
       }
     } else {
+      newId = nextId('acc');
       const account = {
-        id: nextId('acc'),
+        id: newId,
         name,
         type,
-        category: type === 'liability' ? 'Debt' : category,
+        category,
         order: draft.accounts.length,
-        colourIndex: 5,
+        colourIndex: 0,
         archived: false,
         goal: null,
         note: String(data.get('note') || '').trim()
@@ -1102,18 +1303,13 @@ function handleAccountSubmit(form) {
         account.priceUpdatedAt = unitPricePence ? todayISO() : null;
         account.priceSource = 'manual';
       }
-      if (type === 'liability' && interestRatePct !== undefined) {
-        account.interestRatePct = interestRatePct;
-      }
+      if (type === 'liability' && interestRatePct !== undefined) account.interestRatePct = interestRatePct;
       draft.accounts.push(account);
-      const slots = assignAccountColours(draft.accounts);
-      draft.accounts.forEach((a) => {
-        if (slots.has(a.id)) a.colourIndex = slots.get(a.id);
-      });
     }
-  });
+  }, { silent: true });
 
   closeSheet();
+  render();
 }
 
 function handleTransactionSubmit(form, { force = false } = {}) {
@@ -1128,15 +1324,9 @@ function handleTransactionSubmit(form, { force = false } = {}) {
   const mode = isQuantity ? String(data.get('mode') || 'money') : 'money';
 
   const date = String(data.get('date') || '');
-  if (!isValidISODate(date)) {
-    setFieldError(form, 'date', 'That is not a real date.');
-    return;
-  }
+  if (!isValidISODate(date)) { setFieldError(form, 'date', 'That is not a real date.'); return; }
   const today = todayISO();
-  if (date > today) {
-    setFieldError(form, 'date', 'Entries cannot be dated in the future.');
-    return;
-  }
+  if (date > today) { setFieldError(form, 'date', 'Entries cannot be dated in the future.'); return; }
 
   let unitPricePence = null;
   if (isQuantity) {
@@ -1171,11 +1361,8 @@ function handleTransactionSubmit(form, { force = false } = {}) {
 
   // Warn before a withdrawal that takes an asset below zero.
   if (direction === 'out' && !force) {
-    const balances = balancesAt(app.state, today);
-    const entry = balances.get(account.id) || { valuePence: 0, unitsE8: 0 };
-    const currentValue = txId
-      ? entry.valuePence + originalSignedValue(txId)
-      : entry.valuePence;
+    const entry = balancesAt(app.state, today).get(account.id) || { valuePence: 0 };
+    const currentValue = txId ? entry.valuePence - originalSignedValue(txId) : entry.valuePence;
     const check = checkWithdrawal(account, currentValue, amountPence);
     if (!check.ok) {
       setFieldError(form, 'form', `${check.warning} Press save again to record it anyway.`);
@@ -1185,14 +1372,10 @@ function handleTransactionSubmit(form, { force = false } = {}) {
   }
 
   commit((draft) => {
+    const note = String(data.get('note') || '').trim();
     if (txId) {
       const target = draft.transactions.find((t) => t.id === txId);
-      target.direction = direction;
-      target.amountPence = amountPence;
-      target.unitsE8 = unitsE8;
-      target.unitPricePence = unitPricePence;
-      target.date = date;
-      target.note = String(data.get('note') || '').trim();
+      Object.assign(target, { direction, amountPence, unitsE8, unitPricePence, date, note });
     } else {
       draft.transactions.push({
         id: nextId('tx'),
@@ -1202,13 +1385,14 @@ function handleTransactionSubmit(form, { force = false } = {}) {
         amountPence,
         unitsE8,
         unitPricePence,
-        note: String(data.get('note') || '').trim(),
+        note,
         createdAt: new Date().toISOString()
       });
     }
-  });
+  }, { silent: true });
 
   closeSheet();
+  render();
 }
 
 /** How much an existing entry currently contributes, so an edit compares fairly. */
@@ -1232,10 +1416,8 @@ function handleGoalSubmit(form) {
 
   const target = parseMoneyToPence(String(data.get('target') || ''), { allowZero: true });
   if (!target.ok) { setFieldError(form, 'target', target.error); return; }
-
   const date = String(data.get('date') || '');
   if (!isValidISODate(date)) { setFieldError(form, 'date', 'That is not a real date.'); return; }
-
   const start = parseMoneyToPence(String(data.get('start') || '0'), { allowZero: true, allowNegative: true });
   if (!start.ok) { setFieldError(form, 'start', start.error); return; }
 
@@ -1247,8 +1429,10 @@ function handleGoalSubmit(form) {
       startDate: (acc.goal && acc.goal.startDate) || todayISO(),
       startPence: start.pence
     };
-  });
+  }, { silent: true });
   closeSheet();
+  app.accountTab = 'overview';
+  render();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1257,15 +1441,13 @@ function handleGoalSubmit(form) {
 
 function exportJson() {
   const today = todayISO();
-  const text = store.toExportJson(app.state);
-  const result = store.downloadText(store.exportFilename(today, 'json'), text, 'application/json');
+  const result = store.downloadText(store.exportFilename(today, 'json'), store.toExportJson(app.state), 'application/json');
   if (!result.ok) {
     addBanner({ kind: 'error', title: 'The export did not start', body: result.message });
     return;
   }
+  dropBanners('backup-reminder');
   commit((draft) => { draft.lastExportAt = today; });
-  app.banners = app.banners.filter((b) => b.key !== 'backup-reminder');
-  renderBanners();
   addBanner({
     kind: 'success', key: 'exported', title: 'Backup downloaded',
     body: 'Keep that file somewhere safe. Importing it later restores everything exactly.'
@@ -1273,11 +1455,7 @@ function exportJson() {
 }
 
 function exportCsv() {
-  const result = store.downloadText(
-    store.exportFilename(todayISO(), 'csv'),
-    transactionsToCsv(app.state),
-    'text/csv'
-  );
+  const result = store.downloadText(store.exportFilename(todayISO(), 'csv'), transactionsToCsv(app.state), 'text/csv');
   if (!result.ok) addBanner({ kind: 'error', title: 'The export did not start', body: result.message });
 }
 
@@ -1300,30 +1478,24 @@ function importJson() {
     const file = input.files && input.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onerror = () => {
-      addBanner({ kind: 'error', title: 'That file could not be read', body: 'Try exporting it again.' });
-    };
+    reader.onerror = () => addBanner({ kind: 'error', title: 'That file could not be read', body: 'Try exporting it again.' });
     reader.onload = () => {
       const parsed = store.parseImport(String(reader.result || ''), todayISO());
       if (!parsed.ok) {
-        addBanner({
-          kind: 'error',
-          title: 'That file was not imported',
-          body: `Nothing has changed. ${parsed.errors.join(' ')}`
-        });
+        addBanner({ kind: 'error', title: 'That file was not imported', body: `Nothing has changed. ${parsed.errors.join(' ')}` });
         return;
       }
       confirmSheet({
         title: 'Import this backup?',
-        body: `The file holds ${parsed.state.accounts.length} accounts and `
-          + `${parsed.state.transactions.length} entries. Importing replaces everything currently `
-          + 'in the app. Export what you have first if you are not sure.',
+        body: `The file holds ${parsed.state.accounts.length} accounts and ${parsed.state.transactions.length} entries. `
+          + 'Importing replaces everything currently in the app. Export what you have first if you are not sure.',
         confirmLabel: 'Replace my data',
         extraAction: { label: 'Export what I have first', action: 'export-json' },
         onConfirm: () => {
           app.state = parsed.state;
           const saved = store.save(app.state);
           closeSheet();
+          app.view = 'home';
           render();
           addBanner({
             kind: saved.ok ? 'success' : 'error',
@@ -1349,10 +1521,10 @@ let refreshing = false;
 async function refreshPrices() {
   if (refreshing) return;
   refreshing = true;
-  addBanner({ kind: 'info', key: 'price-refresh', title: 'Checking prices', body: 'This takes a few seconds at most.' });
+  addBanner({ kind: 'info', key: 'price-refresh', title: 'Checking prices', body: 'This takes a few seconds at most.', dismissible: false });
   try {
     const result = await fetchPrices(app.state.accounts);
-    app.banners = app.banners.filter((b) => b.key !== 'price-refresh');
+    dropBanners('price-refresh');
     if (result.prices.size) {
       commit((draft) => {
         const today = todayISO();
@@ -1373,12 +1545,8 @@ async function refreshPrices() {
       body: describeResult(result)
     });
   } catch (error) {
-    app.banners = app.banners.filter((b) => b.key !== 'price-refresh');
-    addBanner({
-      kind: 'info',
-      title: 'Prices left as they were',
-      body: `The price refresh could not run (${error.message}). Your manual prices are untouched.`
-    });
+    dropBanners('price-refresh');
+    addBanner({ kind: 'info', title: 'Prices left as they were', body: `The price refresh could not run (${error.message}). Your typed prices are untouched.` });
   } finally {
     refreshing = false;
   }
@@ -1390,22 +1558,21 @@ async function refreshPrices() {
 
 function resolveTheme(setting) {
   if (setting === 'light' || setting === 'dark') return setting;
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
-    ? 'light' : 'dark';
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
 }
 
 function applyTheme(setting) {
-  document.documentElement.setAttribute('data-theme', resolveTheme(setting));
+  const resolved = resolveTheme(setting);
+  document.documentElement.setAttribute('data-theme', resolved);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', resolved === 'light' ? '#F2F3F6' : '#0F1013');
 }
 
 function watchSystemTheme() {
   if (!window.matchMedia) return;
   const query = window.matchMedia('(prefers-color-scheme: light)');
   const handler = () => {
-    if ((app.state.settings.theme || 'system') === 'system') {
-      applyTheme('system');
-      if (app.view === 'home') renderHome();
-    }
+    if ((app.state.settings.theme || 'system') === 'system') applyTheme('system');
   };
   if (query.addEventListener) query.addEventListener('change', handler);
   else if (query.addListener) query.addListener(handler);
@@ -1416,17 +1583,20 @@ function watchSystemTheme() {
 /* ------------------------------------------------------------------ */
 
 function showTooltip(target) {
-  const text = target.getAttribute('data-tip');
-  if (!text) return;
+  const value = target.getAttribute('data-tip-value');
+  if (!value) return;
   const tooltip = byId('tooltip');
-  tooltip.textContent = text;
+  tooltip.textContent = '';
+  const strong = document.createElement('strong');
+  strong.textContent = value;
+  tooltip.append(strong, document.createTextNode(target.getAttribute('data-tip-label') || ''));
   tooltip.hidden = false;
   const box = target.getBoundingClientRect();
   const size = tooltip.getBoundingClientRect();
   let left = box.left + (box.width / 2) - (size.width / 2);
   left = Math.max(8, Math.min(left, window.innerWidth - size.width - 8));
-  let top = box.top - size.height - 8;
-  if (top < 8) top = box.bottom + 8;
+  let top = box.top - size.height - 10;
+  if (top < 8) top = box.bottom + 10;
   tooltip.style.left = `${Math.round(left)}px`;
   tooltip.style.top = `${Math.round(top)}px`;
 }
@@ -1441,44 +1611,58 @@ function hideTooltip() {
 /* ------------------------------------------------------------------ */
 
 function registerServiceWorker() {
-  if (!('serviceWorker' in navigator)) return;
-  if (window.location.protocol === 'file:') return;
+  if (!('serviceWorker' in navigator) || window.location.protocol === 'file:') return;
   navigator.serviceWorker.register('./sw.js').then((registration) => {
-    registration.addEventListener('updatefound', () => {
-      const installing = registration.installing;
-      if (!installing) return;
-      installing.addEventListener('statechange', () => {
-        if (installing.state === 'installed' && navigator.serviceWorker.controller) {
-          addBanner({
-            kind: 'info',
-            key: 'sw-update',
-            title: 'A new version is ready',
-            body: 'Reload to pick it up. Your data is not affected.',
-            actions: [{ label: 'Reload now', action: 'apply-update', primary: true }]
-          });
-        }
+    const offer = () => {
+      if (!navigator.serviceWorker.controller) return; // a first install, not an update
+      addBanner({
+        kind: 'info',
+        key: 'sw-update',
+        title: 'A new version is ready',
+        body: 'Reload to pick it up. Your data is not affected.',
+        actions: [{ label: 'Reload now', action: 'apply-update', primary: true }]
       });
-    });
+    };
+    const track = (worker) => {
+      if (!worker) return;
+      worker.addEventListener('statechange', () => { if (worker.state === 'installed') offer(); });
+    };
+    // The browser may have found and even finished installing an update
+    // before this page got here, in which case updatefound has already
+    // fired. Catch all three moments, not just the event.
+    if (registration.waiting) offer();
+    track(registration.installing);
+    registration.addEventListener('updatefound', () => track(registration.installing));
   }).catch(() => {
     // Offline support is a bonus, never a reason to break the app.
   });
 
-  let reloading = false;
+  // An app left open on a phone may not navigate for days, so check for a
+  // new release whenever it comes back into view.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    navigator.serviceWorker.getRegistration().then((r) => r && r.update()).catch(() => {});
+  });
+
+  // Only reload when the person asked for the new version. A brand new
+  // install also changes the controller, as the worker takes charge of the
+  // page, and reloading then would wipe the first run screen for nothing.
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (reloading) return;
+    if (!updateRequested || reloading) return;
     reloading = true;
     window.location.reload();
   });
 }
 
+let updateRequested = false;
+let reloading = false;
+
 function applyUpdate() {
+  updateRequested = true;
   if (!('serviceWorker' in navigator)) { window.location.reload(); return; }
   navigator.serviceWorker.getRegistration().then((registration) => {
-    if (registration && registration.waiting) {
-      registration.waiting.postMessage({ type: 'SKIP_WAITING' });
-    } else {
-      window.location.reload();
-    }
+    if (registration && registration.waiting) registration.waiting.postMessage({ type: 'SKIP_WAITING' });
+    else window.location.reload();
   }).catch(() => window.location.reload());
 }
 
@@ -1487,27 +1671,37 @@ function applyUpdate() {
 /* ------------------------------------------------------------------ */
 
 const ACTIONS = {
-  go(el) { app.view = el.dataset.view; render(); window.scrollTo(0, 0); },
-
+  go(el) { goTo(el.dataset.view); },
+  back() {
+    if (history.state && history.state.phthalo === 'account') history.back();
+    else leaveAccount();
+  },
+  'account-tab'(el) { app.accountTab = el.dataset.tab; render(); },
   'close-sheet': closeSheet,
-
   'dismiss-banner'(el) { removeBanner(el.dataset.arg); },
 
   'dismiss-ios-notice'() {
+    dropBanners('ios-storage');
     commit((draft) => { draft.settings.notices.iosStorage = true; });
-    app.banners = app.banners.filter((b) => b.key !== 'ios-storage');
-    renderBanners();
   },
 
   'toggle-theme'() {
-    const current = resolveTheme(app.state.settings.theme || 'system');
-    const next = current === 'dark' ? 'light' : 'dark';
-    commit((draft) => { draft.settings.theme = next; });
+    const next = resolveTheme(app.state.settings.theme || 'system') === 'dark' ? 'light' : 'dark';
     applyTheme(next);
+    commit((draft) => { draft.settings.theme = next; });
   },
 
-  'set-range'(el) {
-    commit((draft) => { draft.settings.netWorthRange = el.dataset.range; });
+  'set-theme'(el) {
+    const value = el.dataset.value;
+    applyTheme(value);
+    commit((draft) => { draft.settings.theme = value; });
+  },
+
+  'set-range'(el) { commit((draft) => { draft.settings.netWorthRange = el.dataset.range; }); },
+
+  fab() {
+    if (app.view === 'account' && app.accountId) transactionForm({ accountId: app.accountId, direction: 'in' });
+    else accountPicker();
   },
 
   'open-gallery': galleryForm,
@@ -1529,15 +1723,14 @@ const ACTIONS = {
 
   'move-visual'(el) {
     const dir = el.dataset.dir === 'up' ? -1 : 1;
+    const inSheet = Boolean(el.closest('#sheet'));
     commit((draft) => {
-      const list = draft.visuals.filter((v) => v.enabled);
       const source = draft.visuals;
       const index = source.findIndex((v) => v.id === el.dataset.arg);
       if (index < 0) return;
-      // Move past the neighbour that is actually visible on the home screen.
       let swapWith = index + dir;
-      if (list.length && source[index].enabled) {
-        swapWith = index + dir;
+      // On the Insights tab, step past charts that are switched off.
+      if (!inSheet) {
         while (swapWith >= 0 && swapWith < source.length && !source[swapWith].enabled) swapWith += dir;
       }
       if (swapWith < 0 || swapWith >= source.length) return;
@@ -1545,13 +1738,14 @@ const ACTIONS = {
       source.splice(swapWith, 0, moved);
       source.forEach((v, i) => { v.order = i; });
     });
-    if (!byId('sheet-backdrop').hidden) galleryForm();
+    if (inSheet) galleryForm();
   },
 
   'add-account'() { accountForm(null); },
   'edit-account'(el) { accountForm(el.dataset.arg); },
   'open-account'(el) { openAccount(el.dataset.arg); },
   'edit-goal'(el) { goalForm(el.dataset.arg); },
+  'toggle-archived-list'() { app.showArchived = !app.showArchived; render(); },
 
   'clear-goal'(el) {
     const id = el.dataset.arg;
@@ -1559,33 +1753,34 @@ const ACTIONS = {
       const account = draft.accounts.find((a) => a.id === id);
       if (account) account.goal = null;
     });
-    openAccount(id);
   },
 
   'move-account'(el) {
     const dir = el.dataset.dir === 'up' ? -1 : 1;
-    const insideSheet = Boolean(el.closest('#sheet'));
     commit((draft) => {
-      const list = draft.accounts.filter((a) => !a.archived)
-        .sort((a, b) => a.order - b.order);
+      const list = draft.accounts.filter((a) => !a.archived).sort((a, b) => a.order - b.order);
       const index = list.findIndex((a) => a.id === el.dataset.arg);
       if (index < 0 || index + dir < 0 || index + dir >= list.length) return;
       const swap = list[index + dir];
       const current = list[index];
-      const temp = current.order;
-      current.order = swap.order;
-      swap.order = temp;
+      [current.order, swap.order] = [swap.order, current.order];
     });
-    if (insideSheet) openAccount(el.dataset.arg);
   },
 
   'toggle-archive'(el) {
     const id = el.dataset.arg;
+    const account = accountById(id);
+    const archiving = account && !account.archived;
     commit((draft) => {
-      const account = draft.accounts.find((a) => a.id === id);
-      if (account) account.archived = !account.archived;
-    });
-    closeSheet();
+      const target = draft.accounts.find((a) => a.id === id);
+      if (target) target.archived = !target.archived;
+    }, { silent: true });
+    if (archiving) {
+      leaveAccount();
+      addBanner({ kind: 'info', title: `${account.name} archived`, body: 'It keeps its history. Find it again under Settings.' });
+    } else {
+      render();
+    }
   },
 
   'delete-account'(el) {
@@ -1594,9 +1789,8 @@ const ACTIONS = {
     const count = app.state.transactions.filter((t) => t.accountId === account.id).length;
     confirmSheet({
       title: `Delete ${account.name}?`,
-      body: `This removes the account and all ${count} of its entries. `
-        + 'That history is gone from every chart and cannot be undone. '
-        + 'Export a backup first if there is any doubt.',
+      body: `This removes the account and all ${count} of its entries. That history is gone from every chart `
+        + 'and cannot be undone. Export a backup first if there is any doubt.',
       confirmLabel: 'Delete it',
       danger: true,
       extraAction: { label: 'Export a backup first', action: 'export-json' },
@@ -1605,20 +1799,15 @@ const ACTIONS = {
           draft.accounts = draft.accounts.filter((a) => a.id !== account.id);
           draft.transactions = draft.transactions.filter((t) => t.accountId !== account.id);
           draft.accounts.forEach((a, i) => { a.order = i; });
-        });
+        }, { silent: true });
         closeSheet();
-        addBanner({
-          kind: 'info', title: 'Account deleted',
-          body: `${account.name} and its ${count} entries have been removed.`
-        });
+        if (app.view === 'account') leaveAccount(); else render();
+        addBanner({ kind: 'info', title: 'Account deleted', body: `${account.name} and its ${count} entries have been removed.` });
       }
     });
   },
 
-  'new-tx'(el) {
-    transactionForm({ accountId: el.dataset.arg, direction: el.dataset.dir || 'in' });
-  },
-
+  'new-tx'(el) { transactionForm({ accountId: el.dataset.arg, direction: el.dataset.dir || 'in' }); },
   'edit-tx'(el) { transactionForm({ txId: el.dataset.arg }); },
 
   'delete-tx'(el) {
@@ -1628,15 +1817,13 @@ const ACTIONS = {
     confirmSheet({
       title: 'Delete this entry?',
       body: `${formatMoney(tx.amountPence)} ${tx.direction === 'out' ? 'out of' : 'into'} `
-        + `${account ? account.name : 'a deleted account'} on ${longDate(tx.date)}. `
-        + 'Every chart will be redrawn without it.',
+        + `${account ? account.name : 'a deleted account'} on ${longDate(tx.date)}. Every chart will be redrawn without it.`,
       confirmLabel: 'Delete it',
       danger: true,
       onConfirm: () => {
-        commit((draft) => {
-          draft.transactions = draft.transactions.filter((t) => t.id !== tx.id);
-        });
+        commit((draft) => { draft.transactions = draft.transactions.filter((t) => t.id !== tx.id); }, { silent: true });
         closeSheet();
+        render();
       }
     });
   },
@@ -1646,8 +1833,8 @@ const ACTIONS = {
     const input = byId('unit-price');
     if (!account || !input) return;
     const parsed = parseMoneyToPence(input.value, { allowZero: true });
-    const hint = byId('price-hint');
     if (!parsed.ok) {
+      const hint = byId('price-hint');
       if (hint) { hint.textContent = parsed.error; hint.className = 'field-error'; }
       input.classList.add('has-error');
       return;
@@ -1658,7 +1845,6 @@ const ACTIONS = {
       target.priceUpdatedAt = todayISO();
       target.priceSource = 'manual';
     });
-    openAccount(account.id);
   },
 
   'export-json': exportJson,
@@ -1669,22 +1855,21 @@ const ACTIONS = {
   'load-demo'() {
     confirmSheet({
       title: 'Load the demo data?',
-      body: 'This replaces everything currently in the app with twelve months of made up '
-        + 'activity so you can see every chart working.',
+      body: 'This replaces everything currently in the app with twelve months of made up activity, so you can see every chart working.',
       confirmLabel: 'Load it',
-      extraAction: app.state.transactions.length
-        ? { label: 'Export what I have first', action: 'export-json' } : null,
+      extraAction: app.state.transactions.length ? { label: 'Export what I have first', action: 'export-json' } : null,
       onConfirm: () => {
         const next = demoState(todayISO());
         app.state = next;
         store.save(app.state);
         closeSheet();
+        dropBanners('welcome');
         app.view = 'home';
         render();
+        window.scrollTo(0, 0);
         addBanner({
           kind: 'success', title: 'Demo data loaded',
-          body: `${next.transactions.length} entries across ${next.accounts.length} accounts. `
-            + 'Use "Clear all data" on the Data tab when you have finished looking.'
+          body: `${next.transactions.length} entries across ${next.accounts.length} accounts. Clear it in Settings when you have finished looking.`
         });
       }
     });
@@ -1693,12 +1878,10 @@ const ACTIONS = {
   'clear-all'() {
     confirmSheet({
       title: 'Clear everything?',
-      body: 'Every account, entry and goal is removed from this browser and cannot be recovered '
-        + 'without a backup file. The ten starting accounts come back empty.',
+      body: 'Every account, entry and goal is removed from this browser and cannot be recovered without a backup file. The ten starting accounts come back empty.',
       confirmLabel: 'Clear it all',
       danger: true,
-      extraAction: app.state.transactions.length
-        ? { label: 'Export a backup first', action: 'export-json' } : null,
+      extraAction: app.state.transactions.length ? { label: 'Export a backup first', action: 'export-json' } : null,
       onConfirm: () => {
         store.clearAll();
         app.state = emptyStateWithDefaults(todayISO());
@@ -1725,13 +1908,13 @@ const ACTIONS = {
     }
   },
 
-  'recovery-reload'() { window.location.reload(); }
-};
+  'recovery-reload'() { window.location.reload(); },
 
-ACTIONS['run-confirm'] = function runConfirm() {
-  const handler = app.pendingConfirm;
-  app.pendingConfirm = null;
-  if (typeof handler === 'function') handler();
+  'run-confirm'() {
+    const handler = app.pendingConfirm;
+    app.pendingConfirm = null;
+    if (typeof handler === 'function') handler();
+  }
 };
 
 /* ------------------------------------------------------------------ */
@@ -1744,26 +1927,15 @@ document.addEventListener('click', (event) => {
     if (event.target.id === 'sheet-backdrop') closeSheet();
     return;
   }
-  const name = target.dataset.action;
-  const handler = ACTIONS[name];
+  if (target.disabled) return;
+  const handler = ACTIONS[target.dataset.action];
   if (typeof handler !== 'function') return;
   event.preventDefault();
+  hideTooltip();
   try {
     handler(target);
   } catch (error) {
-    addBanner({
-      kind: 'error',
-      title: 'That did not work',
-      body: `${error.message}. Nothing has been changed.`
-    });
-  }
-});
-
-document.addEventListener('change', (event) => {
-  if (event.target.dataset && event.target.dataset.action === 'set-theme') {
-    const value = event.target.value;
-    commit((draft) => { draft.settings.theme = value; }, { silent: true });
-    applyTheme(value);
+    addBanner({ kind: 'error', title: 'That did not work', body: `${error.message}. Nothing has been changed.` });
   }
 });
 
@@ -1780,31 +1952,26 @@ document.addEventListener('submit', (event) => {
       handleTransactionSubmit(form, { force });
     } else if (kind === 'goal') handleGoalSubmit(form);
   } catch (error) {
-    addBanner({
-      kind: 'error',
-      title: 'That could not be saved',
-      body: `${error.message}. Nothing has been changed.`
-    });
+    addBanner({ kind: 'error', title: 'That could not be saved', body: `${error.message}. Nothing has been changed.` });
   }
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    if (!byId('sheet-backdrop').hidden) closeSheet();
-    hideTooltip();
-  }
+  if (event.key !== 'Escape') return;
+  hideTooltip();
+  if (app.sheetOpen) closeSheet();
 });
 
 // Tooltips on hover, on focus and on tap.
 document.addEventListener('pointerover', (event) => {
-  const target = event.target.closest('[data-tip]');
+  const target = event.target.closest && event.target.closest('[data-tip-value]');
   if (target) showTooltip(target);
 });
 document.addEventListener('pointerout', (event) => {
-  if (event.target.closest('[data-tip]')) hideTooltip();
+  if (event.target.closest && event.target.closest('[data-tip-value]')) hideTooltip();
 });
 document.addEventListener('focusin', (event) => {
-  const target = event.target.closest('[data-tip]');
+  const target = event.target.closest && event.target.closest('[data-tip-value]');
   if (target) showTooltip(target);
 });
 document.addEventListener('focusout', hideTooltip);
@@ -1814,7 +1981,7 @@ let resizeTimer = null;
 window.addEventListener('resize', () => {
   if (resizeTimer) window.clearTimeout(resizeTimer);
   resizeTimer = window.setTimeout(() => {
-    if (app.view === 'home' && Math.abs(window.innerWidth - app.lastWidth) > 8) renderHome();
+    if (Math.abs(window.innerWidth - app.lastWidth) > 8) render();
   }, 160);
 });
 

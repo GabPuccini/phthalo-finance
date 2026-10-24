@@ -3,15 +3,24 @@
  *
  * Offline support for Phthalo Finance.
  *
- * Bump CACHE_VERSION on every deploy. On activate, every cache that is not
- * the current one is deleted, and the page is told a new version is
- * waiting so it can offer a reload rather than serving a stale app forever.
+ * Every file the app needs, the page included, is served from one cache
+ * named after CACHE_VERSION. The page and its code therefore always come
+ * from the same release, so a half updated app, new page with old scripts,
+ * cannot happen. The first version of this worker served the page from the
+ * network and the scripts from the cache, which allowed exactly that.
+ *
+ * A new release is a new sw.js. The browser notices, this worker installs
+ * the new files into a fresh cache and waits, and the page offers "A new
+ * version is ready". Tapping it activates the new cache and deletes the old
+ * one. CACHE_VERSION is stamped from a hash of the files by
+ * tools/stamp-sw.mjs, and a test fails if the files change without it, so a
+ * release cannot go out under an old version and be served stale forever.
  *
  * Every path here is relative, because the app is served from a project
  * subfolder on GitHub Pages, not from the domain root.
  */
 
-const CACHE_VERSION = 'v1';
+const CACHE_VERSION = 'fa54b3b0fa48';
 const CACHE_NAME = `phthalo-finance-${CACHE_VERSION}`;
 
 const PRECACHE = [
@@ -23,9 +32,11 @@ const PRECACHE = [
   './src/app.js',
   './src/logic.js',
   './src/charts.js',
+  './src/icons.js',
   './src/storage.js',
   './src/prices.js',
   './src/seed.js',
+  './tests/cases.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-512-maskable.png',
@@ -36,8 +47,7 @@ const PRECACHE = [
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    // addAll fails the whole install if one file is missing, so each file
-    // is added on its own and a miss is logged rather than fatal.
+    // Fetched fresh, past any HTTP cache, so a release never inherits an old file.
     await Promise.all(PRECACHE.map(async (path) => {
       try {
         await cache.add(new Request(path, { cache: 'reload' }));
@@ -51,10 +61,9 @@ self.addEventListener('install', (event) => {
 self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const names = await caches.keys();
-    await Promise.all(names.map((name) => {
-      if (name.startsWith('phthalo-finance-') && name !== CACHE_NAME) return caches.delete(name);
-      return Promise.resolve(false);
-    }));
+    await Promise.all(names
+      .filter((name) => name.startsWith('phthalo-finance-') && name !== CACHE_NAME)
+      .map((name) => caches.delete(name)));
     await self.clients.claim();
   })());
 });
@@ -66,58 +75,34 @@ self.addEventListener('message', (event) => {
 self.addEventListener('fetch', (event) => {
   const request = event.request;
   if (request.method !== 'GET') return;
-
   const url = new URL(request.url);
-  // Price lookups must never be served from the cache, and must never be
-  // cached themselves. They are allowed to fail; the app copes.
+
+  // Price lookups go to other sites. They are never cached, never served
+  // from the cache, and allowed to fail; the app copes.
   if (url.origin !== self.location.origin) return;
 
-  if (request.mode === 'navigate') {
-    // Network first for the page itself so a new deploy is picked up,
-    // falling back to the cached shell when offline.
-    event.respondWith((async () => {
-      try {
-        const fresh = await fetch(request);
-        const cache = await caches.open(CACHE_NAME);
-        cache.put('./index.html', fresh.clone());
-        return fresh;
-      } catch {
-        const cached = await caches.match('./index.html');
-        return cached || new Response(
-          '<h1>Offline</h1><p>Phthalo Finance is not in the cache yet. '
-          + 'Connect once and it will work offline afterwards.</p>',
+  // Opening the app, at the folder or at index.html, gets the cached page.
+  const isShell = request.mode === 'navigate'
+    && (url.pathname.endsWith('/') || url.pathname.endsWith('/index.html'));
+
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    const cached = await cache.match(isShell ? './index.html' : request, { ignoreSearch: isShell });
+    if (cached) return cached;
+    try {
+      const fresh = await fetch(request);
+      if (fresh && fresh.ok && !isShell) cache.put(request, fresh.clone());
+      return fresh;
+    } catch {
+      if (request.mode === 'navigate') {
+        return new Response(
+          '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">'
+          + '<body style="font-family:system-ui;background:#0F1013;color:#F4F5F7;padding:24px">'
+          + '<h1>Offline</h1><p>Phthalo is not saved for offline use on this device yet. '
+          + 'Open it once while connected and it will work offline from then on.</p>',
           { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
         );
       }
-    })());
-    return;
-  }
-
-  // Cache first for everything else, refreshing the copy in the background.
-  event.respondWith((async () => {
-    const cached = await caches.match(request);
-    if (cached) {
-      event.waitUntil((async () => {
-        try {
-          const fresh = await fetch(request);
-          if (fresh && fresh.ok) {
-            const cache = await caches.open(CACHE_NAME);
-            await cache.put(request, fresh);
-          }
-        } catch {
-          // Offline is fine, the cached copy was already returned.
-        }
-      })());
-      return cached;
-    }
-    try {
-      const fresh = await fetch(request);
-      if (fresh && fresh.ok && url.origin === self.location.origin) {
-        const cache = await caches.open(CACHE_NAME);
-        cache.put(request, fresh.clone());
-      }
-      return fresh;
-    } catch {
       return new Response('', { status: 504, statusText: 'Offline and not cached' });
     }
   })());
